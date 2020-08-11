@@ -30,6 +30,15 @@ pub enum CompileError {
     #[error("Error: {}. On line {}", .message, .line)]
     ParseError { message: &'static str, line: u64 },
 
+    #[error("Too many local variables in function.")]
+    LocalCount,
+
+    #[error("Variable {} already declared in this scope", .0)]
+    VariableAlreadyDeclared(String),
+
+    #[error("Cannot read local variable in its own initializer.")]
+    LocalInitializer,
+
     // Used internally in consume to provide error messages to the user.
     #[error("Internal error")]
     InternalError,
@@ -37,12 +46,29 @@ pub enum CompileError {
 
 type Result<T> = std::result::Result<T, CompileError>;
 
+#[derive(Debug)]
+struct Local<'a> {
+    name: Token<'a>,
+
+    // The level of nesting for this local, 0 is the global scope and it moves upwards.
+    depth: i64,
+}
+
+impl<'a> Local<'a> {
+    fn new(name: Token<'a>, depth: i64) -> Self {
+        Self { name, depth }
+    }
+}
+
 pub struct Compiler<'src> {
     parser: Parser<'src>,
     chunk: Chunk,
     source: &'src str,
     scanner: Scanner<'src>,
     mem: &'src mut StringCache,
+    locals: Vec<Local<'src>>,
+    local_count: i64,
+    scope_depth: i64,
     errors: Vec<CompileError>,
 }
 
@@ -54,6 +80,9 @@ impl<'s, 'src: 's> Compiler<'src> {
             source,
             scanner: Scanner::new(source),
             mem,
+            locals: Vec::new(),
+            local_count: 0,
+            scope_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -63,13 +92,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.advance();
 
         while !self.match_token(TokenKind::EOF)? {
-            if let Err(err) = self.declaration() {
-                eprintln!("COMPILER::[ERROR] {}", err);
-                self.errors.push(err);
-
-                // Exit if synchronize encounters any errors.
-                self.synchronize()?;
-            }
+            self.decl()?;
         }
 
         self.emit_byte(OpCode::Return)?;
@@ -110,7 +133,7 @@ impl<'s, 'src: 's> Compiler<'src> {
             match self.scanner.scan_token() {
                 Ok(token) => {
                     self.parser.current = Some(token);
-                    println!("COMPILER::[ADVANCE] {:?}", self.parser.current().unwrap());
+                    println!("COMPILER\t[ADVANCE]\t\t{:?}", self.parser.current().unwrap());
                     return;
                 }
                 Err(err) => {
@@ -119,6 +142,17 @@ impl<'s, 'src: 's> Compiler<'src> {
                 }
             }
         }
+    }
+
+    fn decl(&mut self) -> Result<()> {
+        if let Err(err) = self.declaration() {
+            eprintln!("COMPILER\t[ERROR]   {}", err);
+            self.errors.push(err);
+
+            // Exit if synchronize encounters any errors.
+            self.synchronize()?;
+        }
+        Ok(())
     }
 
     fn match_token(&mut self, kind: TokenKind) -> Result<bool> {
@@ -142,14 +176,14 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn emit_byte(&mut self, op_code: OpCode) -> Result<()> {
-        println!("COMPILER::[EMIT] {}", op_code);
+        println!("COMPILER\t[EMIT]\t\t\t{}", op_code);
         let line = self.parser.previous()?.line;
         self.chunk.write(op_code, line);
         Ok(())
     }
 
     fn emit_bytes(&mut self, op_code: OpCode, index: u8) -> Result<()> {
-        println!("COMPILER::[EMIT] {} -> {}", op_code, index);
+        println!("COMPILER\t[EMIT]\t\t\t{} -> {}", op_code, index);
         let line = self.parser.previous()?.line;
         self.chunk.write_index(op_code, index, line);
         Ok(())
@@ -183,7 +217,41 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     fn parse_variable(&mut self) -> Result<u8> {
         self.consume(TokenKind::Identifier)?;
+
+        self.declare_variable()?;
+        if self.scope_depth > 0 {
+            return Ok(0);
+        }
+
         Ok(self.identifier_constant(self.parser.previous()?.data))
+    }
+
+    fn declare_variable(&mut self) -> Result<()> {
+        // Global variables are implictly declared.
+        if self.scope_depth == 0 {
+            return Ok(());
+        }
+        let name = self.parser.previous()?;
+        for local in self.locals.iter().rev() {
+            if local.depth != -1 && local.depth < self.scope_depth {
+                break;
+            }
+            if name.data == local.name.data {
+                return Err(CompileError::VariableAlreadyDeclared(name.data.to_owned()));
+            }
+        }
+
+        self.add_local(name)?;
+        Ok(())
+    }
+
+    fn add_local(&mut self, name: Token<'src>) -> Result<()> {
+        if self.locals.len() > std::u8::MAX as usize {
+            Err(CompileError::LocalCount)
+        } else {
+            self.locals.push(Local::new(name, -1));
+            Ok(())
+        }
     }
 
     fn identifier_constant(&mut self, name: &str) -> u8 {
@@ -191,23 +259,56 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.chunk.add_constant(Value::String(cached_string))
     }
 
+    fn mark_local_initialized(&mut self) -> Result<()> {
+        self.locals.last_mut().unwrap().depth = self.scope_depth;
+        Ok(())
+    }
+
     fn define_variable(&mut self, index: u8) -> Result<()> {
+        if self.scope_depth > 0 {
+            self.mark_local_initialized()?;
+            return Ok(());
+        }
         self.emit_bytes(OpCode::DefineGlobal, index)
     }
 
+    fn resolve_local(&mut self, token: Token<'_>) -> Result<Option<u8>> {
+        for (i, local) in self.locals.iter().enumerate().rev() {
+            println!("LOCAL: {:?}", local);
+            if token.data == local.name.data  {
+                if local.depth == -1 {
+                    // If we want to enable syntax along the lines of
+                    //     var a = 0;
+                    //     { var a = a; }
+                    // We have to make sure this error does not get returned
+                    // if we don't have to. But the local will get declared
+                    // before this point anyway.
+                    return Err(CompileError::LocalInitializer);
+                }
+                return Ok(Some(i as u8));
+            }
+        }
+        Ok(None)
+    }
+
     fn named_variable(&mut self, token: Token<'_>, can_assign: bool) -> Result<()> {
-        let arg = self.identifier_constant(token.data);
+        let (arg, set_op, get_op) = if let Some(arg) = self.resolve_local(token)? {
+            (arg, OpCode::SetLocal, OpCode::GetLocal)
+        } else {
+            let arg = self.identifier_constant(token.data);
+            (arg, OpCode::SetGlobal, OpCode::GetGlobal)
+        };
 
         println!(
-            "COMPILER::[NAMED VARIABLE] {:?}\tCAN_ASSIGN: {}",
+            "COMPILER\t[NAMED VARIABLE]\t{:?} | CAN_ASSIGN: {}",
             token, can_assign
         );
 
         if self.match_token(TokenKind::Equal)? && can_assign {
             self.expression()?;
-            self.emit_bytes(OpCode::SetGlobal, arg)?;
+            self.emit_bytes(set_op, arg)?;
         } else {
-            self.emit_bytes(OpCode::GetGlobal, arg)?;
+            self.emit_bytes(get_op, arg)?;
         }
         Ok(())
     }
@@ -246,10 +347,42 @@ impl<'s, 'src: 's> Compiler<'src> {
     fn statement(&mut self) -> Result<()> {
         if self.match_token(TokenKind::Print)? {
             self.print_statement()?;
+        } else if self.match_token(TokenKind::BraceLeft)? {
+            self.scope_enter();
+            self.block()?;
+            self.scope_leave()?;
         } else {
             self.expression_statement()?;
         }
         Ok(())
+    }
+
+    fn scope_enter(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    fn scope_leave(&mut self) -> Result<()> {
+        self.scope_depth -= 1;
+        while let Some(local) = self.locals.last() {
+            if local.depth <= self.scope_depth {
+                break;
+            }
+            self.locals.pop();
+            self.emit_byte(OpCode::Pop)?;
+        }
+        Ok(())
+    }
+
+    fn block(&mut self) -> Result<()> {
+        loop {
+            let check_brace = self.parser.check_current(TokenKind::BraceRight)?;
+            let check_eof = self.parser.check_current(TokenKind::EOF)?;
+            if check_brace || check_eof {
+                break;
+            }
+            self.decl()?;
+        }
+        self.consume(TokenKind::BraceRight).map_err(self.error_msg("Expect '}' after a block"))
     }
 
     fn expression_statement(&mut self) -> Result<()> {
@@ -321,7 +454,7 @@ impl<'s, 'src: 's> Compiler<'src> {
             .ok_or(CompileError::ParseRuleNotFound)?;
         let higher_precedence = rule.precedence.higher();
         println!(
-            "COMPILER::[BINARY] {:?}, prec_old: {:?}, prec_new: {:?}, operator type: {:?}",
+            "COMPILER\t[BINARY]\t\t{:?} | PRECEDENCE: {:?} | PRECEDENCE_HIGHER: {:?} | OPERATOR: {:?}",
             rule, rule.precedence, higher_precedence, operator_type
         );
         self.parse_precedence(higher_precedence)?;
@@ -525,6 +658,14 @@ impl<'a> Parser<'a> {
     fn current(&self) -> Result<Token<'a>> {
         self.current.ok_or(CompileError::TokenNotFound)
     }
+
+    fn check_current(&self, kind: TokenKind) -> Result<bool> {
+        if self.current()?.kind == kind {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -578,6 +719,14 @@ mod tests {
     #[test]
     fn compile_weird_expr() {
         let source = "1 * 2 * 3 * 4 * 5 * 6 * 7 * 8 * 9 * 10 * 11 * 12;";
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        assert!(compiler.compile().is_ok());
+    }
+
+    #[test]
+    fn compile_shadow_global_same_name() {
+        let source = "var a = 1; { var a = a; }";
         let mut cache = StringCache::new();
         let compiler = Compiler::new(source, &mut cache);
         assert!(compiler.compile().is_ok());

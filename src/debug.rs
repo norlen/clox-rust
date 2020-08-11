@@ -44,7 +44,15 @@ pub fn disassemble_instruction_i<'a>(
         }
     };
 
-    get_string(op_code, constant_instruction)
+    let byte_instruction = || ("".to_owned(), 1337);
+
+    match op_code {
+        OpCode::SetLocal | OpCode::GetLocal => {
+            let byte = ip.next().unwrap();
+            (format!("{}\t[slot] {}", op_code.name(), byte), 2)
+        },
+        _ => get_string(op_code, constant_instruction, byte_instruction)
+    }
 }
 
 pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usize) -> (String, usize) {
@@ -62,12 +70,18 @@ pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usiz
         }
     };
 
-    get_string(op_code, constant_instruction)
+    let byte_instruction = || {
+        let byte = chunk.code.get(index + 1).unwrap();
+        (format!("{}\t[slot] {}", op_code.name(), byte), 2)
+    };
+
+    get_string(op_code, constant_instruction, byte_instruction)
 }
 
-fn get_string<F>(op_code: OpCode, constant_instruction: F) -> (String, usize)
+fn get_string<F, G>(op_code: OpCode, constant_instruction: F, byte_instruction: G) -> (String, usize)
 where
     F: FnOnce() -> (String, usize),
+    G: FnOnce() -> (String, usize),
 {
     match op_code {
         OpCode::Return
@@ -89,6 +103,8 @@ where
         | OpCode::DefineGlobal
         | OpCode::GetGlobal
         | OpCode::SetGlobal => constant_instruction(),
+        | OpCode::GetLocal
+        | OpCode::SetLocal => byte_instruction(),
         
         // OpCode::ConstantLong => {
         //     let constant = chunk.read_constant_long_iter(ip).unwrap();

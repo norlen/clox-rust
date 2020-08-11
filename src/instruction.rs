@@ -23,6 +23,8 @@ pub enum OpCode {
     DefineGlobal,
     GetGlobal,
     SetGlobal,
+    GetLocal,
+    SetLocal,
 }
 
 impl Into<u8> for OpCode {
@@ -66,6 +68,8 @@ impl OpCode {
             OpCode::DefineGlobal => "DefineGlobal",
             OpCode::GetGlobal => "GetGlobal",
             OpCode::SetGlobal => "SetGlobal",
+            OpCode::GetLocal => "GetLocal",
+            OpCode::SetLocal => "SetLocal",
         }
     }
 }

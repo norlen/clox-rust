@@ -249,6 +249,16 @@ impl VM {
                         panic!();
                     }
                 }
+                OpCode::GetLocal => {
+                    let index = ip.next().ok_or(VMError::RuntimeError)?.clone();
+                    let value = self.stack.get(index as usize).ok_or(VMError::RuntimeError)?.clone();
+                    self.stack.push(value);
+                }
+                OpCode::SetLocal => {
+                    let index = ip.next().ok_or(VMError::RuntimeError)?.clone();
+                    let value = self.stack.last().ok_or(VMError::RuntimeError)?.clone();
+                    self.stack.insert(index as usize, value);
+                }
             }
         }
         Ok(())
@@ -352,6 +362,70 @@ mod tests {
         var beverage = "cafe au lait";
         var breakfast = "beignets with " + beverage;
         print breakfast;
+        "#;
+        let mut vm = VM::new(VM_OPTIONS);
+        assert!(vm.interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_locals_simple() {
+        let source = "{ var a = 2; }";
+        let mut vm = VM::new(VM_OPTIONS);
+        assert!(vm.interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_locals1() {
+        let source = r#"
+        {
+            var a = 1;
+            var b = a;
+            b = b + 1;
+            var c = a + b;
+            a = 5;
+            b = 10;
+            c = a + b;
+        }
+        "#;
+        let mut vm = VM::new(VM_OPTIONS);
+        assert!(vm.interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_locals2() {
+        let source = r#"
+        {
+            var a = 1;
+            {
+                var b = 2;
+                {
+                    var c = 3;
+                    {
+                        var d = 4;
+                    }
+                }
+            }
+        }
+        "#;
+        let mut vm = VM::new(VM_OPTIONS);
+        assert!(vm.interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_locals_shadowing() {
+        let source = r#"
+        {
+            var a = 1;
+            {
+                var a = a;
+                {
+                    var a = a;
+                    {
+                        var a = a;
+                    }
+                }
+            }
+        }
         "#;
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret(source).is_ok());
