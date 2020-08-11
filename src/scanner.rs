@@ -67,40 +67,14 @@ impl<'a> Scanner<'a> {
                 '+' => self.create_token(TokenKind::Plus),
                 '/' => self.create_token(TokenKind::Slash),
                 '*' => self.create_token(TokenKind::Star),
-                '!' => {
-                    if self.match_token('=') {
-                        self.create_token(TokenKind::BangEqual)
-                    } else {
-                        self.create_token(TokenKind::Bang)
-                    }
-                }
-                '=' => {
-                    if self.match_token('=') {
-                        self.create_token(TokenKind::EqualEqual)
-                    } else {
-                        self.create_token(TokenKind::Equal)
-                    }
-                }
-                '<' => {
-                    if self.match_token('=') {
-                        self.create_token(TokenKind::LessEqual)
-                    } else {
-                        self.create_token(TokenKind::Less)
-                    }
-                }
-                '>' => {
-                    if self.match_token('=') {
-                        self.create_token(TokenKind::GreaterEqual)
-                    } else {
-                        self.create_token(TokenKind::Greater)
-                    }
-                }
+                '!' => self.create_token_match('=', TokenKind::BangEqual, TokenKind::Bang),
+                '=' => self.create_token_match('=', TokenKind::EqualEqual, TokenKind::Equal),
+                '<' => self.create_token_match('=', TokenKind::LessEqual, TokenKind::Less),
+                '>' => self.create_token_match('=', TokenKind::GreaterEqual, TokenKind::Greater),
                 '"' => self.create_string_token()?,
-                ch if ch.is_ascii_digit() => self.create_digit_token(),
-                ch if ch.is_ascii_alphabetic() || ch == '_' => self.create_identifier_token(),
-                _ => {
-                    return Err(ScannerError::InvalidCharacter);
-                }
+                ch if ch.is_digit(10) => self.create_digit_token(),
+                ch if ch.is_alphabetic() => self.create_identifier_token(),
+                _ => return Err(ScannerError::InvalidCharacter),
             };
             println!("SCANNER::[NEW_TOKEN] {:?}", token);
             Ok(token)
@@ -122,6 +96,14 @@ impl<'a> Scanner<'a> {
     fn create_token(&self, kind: TokenKind) -> Token<'a> {
         let data = &self.source[self.start..self.cursor.index];
         Token::new(kind, data, self.line)
+    }
+
+    fn create_token_match(&mut self, matches: char, if_matches: TokenKind, otherwise: TokenKind) -> Token<'a> {
+        if self.match_token(matches) {
+            self.create_token(if_matches)
+        } else {
+            self.create_token(otherwise)
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -156,7 +138,7 @@ impl<'a> Scanner<'a> {
 
     fn create_identifier_token(&mut self) -> Token<'a> {
         self.cursor
-            .advance_when(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+            .advance_when(|ch| ch.is_alphanumeric() || ch == '_');
 
         let identifier = &self.source[self.start..self.cursor.index];
         if let Some(kind) = self.keywords.get(identifier) {
@@ -167,7 +149,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn create_digit_token(&mut self) -> Token<'a> {
-        let check_digit = |ch: char| ch.is_ascii_digit();
+        let check_digit = |ch: char| ch.is_digit(10);
 
         self.cursor.advance_when(check_digit);
 
