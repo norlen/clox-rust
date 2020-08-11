@@ -1,4 +1,3 @@
-use crate::chunk;
 use crate::chunk::Chunk;
 use crate::compiler::{CompileError, Compiler};
 use crate::debug;
@@ -6,6 +5,7 @@ use crate::instruction::OpCode;
 use crate::string_cache::StringCache;
 use crate::value::Value;
 use thiserror::Error;
+use std::collections::HashMap;
 
 pub type Result<T> = std::result::Result<T, VMError>;
 
@@ -19,12 +19,16 @@ pub enum VMError {
 
     #[error("Type mismatch: {}", .0)]
     TypeError(String),
+
+    #[error("Undefined variable: {}", .0)]
+    UndefinedVariable(String),
 }
 
 pub struct VM {
     options: VMOptions,
     stack: Vec<Value>,
     string_cache: StringCache,
+    globals: HashMap<String, Value>,
 }
 
 pub struct VMOptions {
@@ -37,6 +41,7 @@ impl VM {
             options,
             stack: Vec::new(),
             string_cache: StringCache::new(),
+            globals: HashMap::new(),
         }
     }
 
@@ -57,13 +62,19 @@ impl VM {
                 if self.stack.len() > 0 {
                     println!("-- stack --");
                     for val in self.stack.iter() {
-                        print!("[{}] ", val);
+                        match val {
+                            Value::String(index) => {
+                                let cached = self.string_cache.get(*index).unwrap();
+                                print!("  [{}] ", cached)
+                            },
+                            _ => print!("  [{}] ", val),
+                        };
                     }
                     println!("\n-- stack end --");
                 }
                 let (text, _offset) =
-                    debug::disassemble_instruction_i(&chunk, *instruction, &mut ip.clone());
-                println!("{}", text);
+                    debug::disassemble_instruction_i(&chunk, &self.string_cache, *instruction, &mut ip.clone());
+                println!("[Instruction] {}\n", text);
             }
 
             match OpCode::from(instruction) {
@@ -72,10 +83,10 @@ impl VM {
                     let constant = self.read_constant(&chunk, &mut ip).unwrap();
                     self.stack.push(constant.clone());
                 }
-                OpCode::ConstantLong => {
-                    let constant = self.read_constant_long(&chunk, &mut ip).unwrap();
-                    self.stack.push(constant.clone());
-                }
+                // OpCode::ConstantLong => {
+                //     let constant = self.read_constant_long(&chunk, &mut ip).unwrap();
+                //     self.stack.push(constant.clone());
+                // }
                 OpCode::Nil => {
                     self.stack.push(Value::Nil);
                 }
@@ -192,6 +203,52 @@ impl VM {
                         }
                     }
                 }
+                OpCode::Print => {
+                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    match value {
+                        Value::String(index) => {
+                            let cached = self.string_cache.get(index).ok_or(VMError::RuntimeError)?;
+                            println!("{}", cached);
+                        },
+                        _ => println!("{}", value),
+                    };
+                }
+                OpCode::Pop => {
+                    // We don't care about the value here, used in expression statements.
+                    self.stack.pop();
+                },
+                OpCode::DefineGlobal => {
+                    if let Some(Value::String(index)) = self.read_constant(&chunk, &mut ip) {
+                        let constant_identifier = self.string_cache.get(*index).unwrap();
+                        let value = self.stack.get(self.stack.len()-1).unwrap();
+                        self.globals.insert(constant_identifier.to_owned(), value.clone());
+                        self.stack.pop();
+                    } else {
+                        panic!();
+                    }
+                }
+                OpCode::GetGlobal => {
+                    if let Some(Value::String(index)) = self.read_constant(&chunk, &mut ip) {
+                        let constant_identifier = self.string_cache.get(*index).unwrap();
+                        let value = self.globals.get(constant_identifier).ok_or(VMError::RuntimeError)?;
+                        self.stack.push(value.clone());
+                    } else {
+                        panic!();
+                    }
+                }
+                OpCode::SetGlobal => {
+                    if let Some(Value::String(index)) = self.read_constant(&chunk, &mut ip) {
+                        let constant_identifer = self.string_cache.get(*index).unwrap();
+                        if self.globals.contains_key(constant_identifer) {
+                            let value = self.stack.last().ok_or(VMError::RuntimeError)?;
+                            self.globals.insert(constant_identifer.to_owned(), value.clone());
+                        } else {
+                            return Err(VMError::UndefinedVariable(constant_identifer.to_owned()));
+                        }
+                    } else {
+                        panic!();
+                    }
+                }
             }
         }
         Ok(())
@@ -206,17 +263,17 @@ impl VM {
         chunk.constants.get(index)
     }
 
-    fn read_constant_long<'src>(
-        &self,
-        chunk: &'src Chunk,
-        ip: &mut impl Iterator<Item = &'src u8>,
-    ) -> Option<&'src Value> {
-        let b2 = *ip.next().unwrap();
-        let b1 = *ip.next().unwrap();
-        let b0 = *ip.next().unwrap();
-        let index = chunk::combine_index(b2, b1, b0);
-        chunk.constants.get(index)
-    }
+    // fn read_constant_long<'src>(
+    //     &self,
+    //     chunk: &'src Chunk,
+    //     ip: &mut impl Iterator<Item = &'src u8>,
+    // ) -> Option<&'src Value> {
+    //     let b2 = *ip.next().unwrap();
+    //     let b1 = *ip.next().unwrap();
+    //     let b0 = *ip.next().unwrap();
+    //     let index = chunk::combine_index(b2, b1, b0);
+    //     chunk.constants.get(index)
+    // }
 }
 
 #[cfg(test)]
@@ -232,17 +289,23 @@ mod tests {
         use crate::instruction;
         use crate::value::Value;
 
-        let mut chunk = chunk::Chunk::new();
-        chunk.add_constant(Value::Number(1.2), 0);
-        chunk.add_constant(Value::Number(3.4), 0);
+        let add_constant = |chunk: &mut Chunk, value| {
+            let index = chunk.add_constant(Value::Number(value));
+            chunk.write_index(OpCode::Constant, index, 0);
+        };
+
+        let mut chunk = Chunk::new();
+        add_constant(&mut chunk, 1.2);
+        add_constant(&mut chunk, 3.4);
         chunk.write(instruction::OpCode::Add, 0);
-        chunk.add_constant(Value::Number(5.6), 0);
+        add_constant(&mut chunk, 5.6);
         chunk.write(instruction::OpCode::Divide, 0);
         chunk.write(instruction::OpCode::Negate, 0);
-        chunk.add_constant_long(Value::Number(2.5), 0);
+        // chunk.add_constant_long(Value::Number(2.5), 0);
         chunk.write(instruction::OpCode::Return, 0);
 
-        debug::disassemble_chunk(&chunk, "test chunk");
+        let cache = StringCache::new();
+        debug::disassemble_chunk(&chunk, &cache, "test chunk");
 
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret_chunk(&chunk).is_ok());
@@ -250,28 +313,46 @@ mod tests {
 
     #[test]
     fn vm_math0() {
-        let source = "(-1 + 2) * 3 - -4";
+        let source = "(-1 + 2) * 3 - -4;";
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret(source).is_ok());
     }
 
     #[test]
     fn vm_math1() {
-        let source = "!(5 - 4 > 3 * 2 == !nil)";
+        let source = "!(5 - 4 > 3 * 2 == !nil);";
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret(source).is_ok());
     }
 
     #[test]
     fn vm_string0() {
-        let source = "\"st\" + \"ri\" + \"ng\"";
+        let source = "\"st\" + \"ri\" + \"ng\";";
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret(source).is_ok());
     }
 
     #[test]
     fn vm_string_interning() {
-        let source = "\"hello\" + \"hello\" + \"hello\"";
+        let source = "\"hello\" + \"hello\" + \"hello\";";
+        let mut vm = VM::new(VM_OPTIONS);
+        assert!(vm.interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_print() {
+        let source = "print 3 + (4 * 3) * (1 + (2 + 3));";
+        let mut vm = VM::new(VM_OPTIONS);
+        assert!(vm.interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_constants() {
+        let source = r#"
+        var beverage = "cafe au lait";
+        var breakfast = "beignets with " + beverage;
+        print breakfast;
+        "#;
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret(source).is_ok());
     }

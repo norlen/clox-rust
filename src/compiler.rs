@@ -9,8 +9,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CompileError {
+    #[error("compiler error: {}", .0)]
+    Default(String),
+
     #[error("error scanning source")]
     ScannerError(#[from] ScannerError),
+
+    #[error("unexpected token: {}", .0)]
+    UnexpectedToken(TokenKind),
+
+    #[error("error while parsing")]
+    ParserError,
 }
 
 pub struct Compiler<'src> {
@@ -33,17 +42,19 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     pub fn compile(mut self) -> Result<Chunk, CompileError> {
-        println!("trying to compile: {}", self.source);
+        println!("COMPILING SOURCE: {}", self.source);
         self.advance();
-        self.expression();
-        self.consume(TokenKind::EOF, "Expect end of expression");
+
+        while !self.match_token(TokenKind::EOF) {
+            self.declaration();
+        }
+
         self.emit_byte(OpCode::Return);
 
         if self.parser.had_error {
-            // return Err()
-            todo!();
+            return Err(CompileError::Default(self.parser.error_msg))
         } else {
-            debug::disassemble_chunk(&self.chunk, "code");
+            debug::disassemble_chunk(&self.chunk, &self.mem, "code");
             // todo!();
         }
         Ok(self.chunk)
@@ -56,6 +67,7 @@ impl<'s, 'src: 's> Compiler<'src> {
             match self.scanner.scan_token() {
                 Ok(token) => {
                     self.parser.current = Some(token);
+                    println!("COMPILER::[ADVANCE] {:?}", self.parser.current.unwrap());
                     break;
                 }
                 Err(e) => {
@@ -67,8 +79,14 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
     }
 
-    fn expression(&mut self) {
-        self.parse_precedence(Precedence::Assignment);
+    fn match_token(&mut self, kind: TokenKind) -> bool {
+        let current_token = self.parser.current.unwrap();
+        if current_token.kind == kind {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     fn consume(&mut self, expected_token: TokenKind, error_msg: &str) {
@@ -82,34 +100,146 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn emit_byte(&mut self, op_code: OpCode) {
+        println!("COMPILER::[EMIT] {}", op_code);
         self.chunk
             .write(op_code, self.parser.previous.unwrap().line);
     }
 
-    fn emit_constant(&mut self, value: Value) {
-        self.chunk
-            .add_constant(value, self.parser.previous.unwrap().line)
+    fn emit_bytes(&mut self, op_code: OpCode, index: u8) {
+        println!("COMPILER::[EMIT] {} -> {}", op_code, index);
+        let line = self.parser.previous.unwrap().line;
+        self.chunk.write_index(op_code, index, line);
     }
 
-    fn grouping(&mut self) {
+    fn synchronize(&mut self) {
+        self.parser.panic_mode = false;
+
+        // Try to skip tokens until something that looks like a statement boundary is found.
+        loop {
+            let previous_kind = self.parser.previous.unwrap().kind;
+            if previous_kind == TokenKind::Semicolon {
+                return;
+            }
+
+            let current_kind = self.parser.current.unwrap().kind;
+            match current_kind {
+                TokenKind::EOF |
+                TokenKind::Class
+                | TokenKind::Fun
+                | TokenKind::Var
+                | TokenKind::For
+                | TokenKind::If
+                | TokenKind::While
+                | TokenKind::Print
+                | TokenKind::Return => return,
+                _ => {}
+            }
+
+            self.advance();
+        }
+    }
+
+    fn parse_variable(&mut self, error_msg: &str) -> u8 {
+        self.consume(TokenKind::Identifier, error_msg);
+        self.identifier_constant(self.parser.previous.unwrap().data)
+    }
+
+    fn identifier_constant(&mut self, name: &str) -> u8 {
+        let cached_string = self.mem.cache(name.to_owned());
+        self.chunk.add_constant(Value::String(cached_string))
+    }
+
+    fn define_variable(&mut self, index: u8) {
+        self.emit_bytes(OpCode::DefineGlobal, index);
+    }
+
+    fn named_variable(&mut self, token: Token<'_>, can_assign: bool) {
+        let arg = self.identifier_constant(token.data);
+
+        println!("COMPILER::[NAMED VARIABLE] {:?}\tCAN_ASSIGN: {}", token, can_assign);
+        
+        if self.match_token(TokenKind::Equal) && can_assign {
+            self.expression();
+            self.emit_bytes(OpCode::SetGlobal, arg);
+        } else {
+            self.emit_bytes(OpCode::GetGlobal, arg);
+        }
+    }
+
+    fn variable(&mut self, can_assign: bool) {
+        self.named_variable(self.parser.previous.unwrap(), can_assign);
+    }
+
+    fn declaration(&mut self) {
+        if self.match_token(TokenKind::Var) {
+            self.var_declaration();
+        } else {
+            self.statement();
+        }
+
+        if self.parser.panic_mode {
+            self.synchronize();
+        }
+    }
+
+    fn var_declaration(&mut self) {
+        let global = self.parse_variable("expect variable name");
+
+        if self.match_token(TokenKind::Equal) {
+            self.expression();
+        } else {
+            self.emit_byte(OpCode::Nil);
+        }
+        self.consume(TokenKind::Semicolon, "Expect ';' after variable declaration.");
+
+        self.define_variable(global);
+    }
+
+    fn statement(&mut self) {
+        if self.match_token(TokenKind::Print) {
+            self.print_statement();
+        } else {
+            self.expression_statement();
+        }
+    }
+
+    fn expression_statement(&mut self) {
+        self.expression();
+        self.consume(TokenKind::Semicolon, "expect ';' after expression");
+        self.emit_byte(OpCode::Pop);
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenKind::Semicolon, "expect ';' after value");
+        self.emit_byte(OpCode::Print);
+    }
+
+    fn expression(&mut self) {
+        self.parse_precedence(Precedence::Assignment);
+    }
+
+    fn grouping(&mut self, _can_assign: bool) {
         self.expression();
         self.consume(TokenKind::ParenRight, "expect ')' after expression.");
     }
 
-    fn number(&mut self) {
+    fn number(&mut self, _can_assign: bool) {
         let value = self.parser.previous.unwrap().data.parse::<f64>().unwrap();
-        self.emit_constant(Value::Number(value));
+        let index = self.chunk.add_constant(Value::Number(value));
+        self.emit_bytes(OpCode::Constant, index);
     }
 
-    fn string(&mut self) {
+    fn string(&mut self, _can_assign: bool) {
         let src_str = self.parser.previous.as_ref().unwrap().data;
         // Skip " at beginning and end.
         let string = src_str[1..src_str.len() - 1].to_owned();
         let cached_index = self.mem.cache(string);
-        self.emit_constant(Value::String(cached_index));
+        let index = self.chunk.add_constant(Value::String(cached_index));
+        self.emit_bytes(OpCode::Constant, index);
     }
 
-    fn unary(&mut self) {
+    fn unary(&mut self, _can_assign: bool) {
         let operator_type = self.parser.previous.unwrap().kind;
         self.parse_precedence(Precedence::Unary);
 
@@ -127,6 +257,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         // Compile the right operand.
         let rule = self.get_rule(operator_type).unwrap();
         let higher_prec = unsafe { ::std::mem::transmute(rule.precedence as u8 + 1) };
+        println!("COMPILER::[BINARY] {:?}, prec_old: {:?}, prec_new: {:?}, operator type: {:?}", rule, rule.precedence, higher_prec, operator_type);
         self.parse_precedence(higher_prec);
 
         // Emit the operator instruction.
@@ -154,7 +285,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
     }
 
-    fn literal(&mut self) {
+    fn literal(&mut self, _can_assign: bool) {
         let op_kind = self.parser.previous.unwrap().kind;
         match op_kind {
             TokenKind::Nil => self.emit_byte(OpCode::Nil),
@@ -174,7 +305,9 @@ impl<'s, 'src: 's> Compiler<'src> {
         let token_kind = self.parser.previous.unwrap().kind;
         let rule = self.get_rule(token_kind).unwrap();
         let prefix_rule = rule.prefix.unwrap();
-        prefix_rule(self);
+
+        let can_assign = precedence <= Precedence::Assignment;
+        prefix_rule(self, can_assign);
 
         while precedence
             <= self
@@ -189,6 +322,10 @@ impl<'s, 'src: 's> Compiler<'src> {
                 .infix
                 .unwrap();
             infix_rule(self);
+        }
+
+        if can_assign && self.match_token(TokenKind::Equal) {
+            panic!("invalid assigment target");
         }
     }
 
@@ -213,7 +350,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         ParseRule { prefix: None                    , infix: Some(Compiler::binary) , precedence: Precedence::Comparison  }, // GreaterEqual
         ParseRule { prefix: None                    , infix: Some(Compiler::binary) , precedence: Precedence::Comparison  }, // Less
         ParseRule { prefix: None                    , infix: Some(Compiler::binary) , precedence: Precedence::Comparison  }, // LessEqual
-        ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Identifier
+        ParseRule { prefix: Some(Compiler::variable), infix: None                   , precedence: Precedence::None        }, // Identifier
         ParseRule { prefix: Some(Compiler::string)  , infix: None                   , precedence: Precedence::None        }, // String
         ParseRule { prefix: Some(Compiler::number)  , infix: None                   , precedence: Precedence::None        }, // Number
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // And
@@ -236,12 +373,13 @@ impl<'s, 'src: 's> Compiler<'src> {
     ];
 }
 
-type ParseFunction<'r, 's> = fn(&'r mut Compiler<'s>);
+type PrefixFunction<'r, 's> = fn(&'r mut Compiler<'s>, bool);
+type InfixFunction<'r, 's> = fn(&'r mut Compiler<'s>);
 
 #[derive(Debug)]
 struct ParseRule<'r, 's> {
-    prefix: Option<ParseFunction<'r, 's>>,
-    infix: Option<ParseFunction<'r, 's>>,
+    prefix: Option<PrefixFunction<'r, 's>>,
+    infix: Option<InfixFunction<'r, 's>>,
     precedence: Precedence,
 }
 
@@ -266,6 +404,7 @@ struct Parser<'a> {
     previous: Option<Token<'a>>,
     had_error: bool,
     panic_mode: bool,
+    error_msg: String,
 }
 
 impl<'a> Parser<'a> {
@@ -275,6 +414,7 @@ impl<'a> Parser<'a> {
             previous: None,
             had_error: false,
             panic_mode: false,
+            error_msg: "".to_owned(),
         }
     }
 
@@ -296,7 +436,9 @@ impl<'a> Parser<'a> {
         // } else {
         //     format!("at {}", )
         // }
-        eprintln!("[line {}] Error: {}", token.line, msg);
+        let msg = format!("[line {}] Error: {}", token.line, msg);
+        eprintln!("{}", msg);
+        self.error_msg = msg;
         self.had_error = true;
     }
 }
@@ -307,7 +449,7 @@ mod tests {
 
     #[test]
     fn simple_test() {
-        let code = "(-1 + 2) * 3 - -4";
+        let code = "(-1 + 2) * 3 - -4;";
         let mut cache = StringCache::new();
         let compiler = Compiler::new(code, &mut cache);
         assert!(compiler.compile().is_ok());
@@ -315,7 +457,43 @@ mod tests {
 
     #[test]
     fn compile_math() {
-        let source = "1.5 + 1.3 * 3.5";
+        let source = "1.5 + 1.3 * 3.5;";
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        assert!(compiler.compile().is_ok());
+    }
+
+    #[test]
+    fn compile_print() {
+        let source = "print 1;";
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        assert!(compiler.compile().is_ok());
+    }
+
+    #[test]
+    fn compile_constants() {
+        let source = r#"
+        var beverage = "cafe au lait";
+        var breakfast = "beignets with " + beverage;
+        print breakfast;
+        "#;
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        assert!(compiler.compile().is_ok());
+    }
+
+    #[test]
+    fn compile_weird_assignments() {
+        let source = "a * b = c + d;";
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        assert!(compiler.compile().is_err());
+    }
+
+    #[test]
+    fn compile_weird_expr() {
+        let source = "1 * 2 * 3 * 4 * 5 * 6 * 7 * 8 * 9 * 10 * 11 * 12;";
         let mut cache = StringCache::new();
         let compiler = Compiler::new(source, &mut cache);
         assert!(compiler.compile().is_ok());

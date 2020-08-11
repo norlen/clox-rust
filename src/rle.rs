@@ -1,4 +1,5 @@
 use std::cmp::PartialEq;
+
 #[derive(Debug, Default)]
 pub struct RLE<T: PartialEq> {
     data: Vec<(T, usize)>,
@@ -16,7 +17,7 @@ impl<T: PartialEq> RLE<T> {
                 return;
             }
         }
-        self.data.push((item, 0));
+        self.data.push((item, 1));
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {

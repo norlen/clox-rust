@@ -4,7 +4,7 @@ use std::fmt;
 #[repr(u8)]
 pub enum OpCode {
     Constant,
-    ConstantLong,
+    // ConstantLong,
     Nil,
     True,
     False,
@@ -18,6 +18,11 @@ pub enum OpCode {
     Subtract,
     Multiply,
     Divide,
+    Print,
+    Pop,
+    DefineGlobal,
+    GetGlobal,
+    SetGlobal,
 }
 
 impl Into<u8> for OpCode {
@@ -42,7 +47,7 @@ impl OpCode {
     pub fn name(&self) -> &str {
         match self {
             OpCode::Constant => "Constant",
-            OpCode::ConstantLong => "ConstantLong",
+            // OpCode::ConstantLong => "ConstantLong",
             OpCode::Nil => "Nil",
             OpCode::True => "True",
             OpCode::False => "False",
@@ -56,6 +61,11 @@ impl OpCode {
             OpCode::Subtract => "Subtract",
             OpCode::Multiply => "Multiply",
             OpCode::Divide => "Divide",
+            OpCode::Print => "Print",
+            OpCode::Pop => "Pop",
+            OpCode::DefineGlobal => "DefineGlobal",
+            OpCode::GetGlobal => "GetGlobal",
+            OpCode::SetGlobal => "SetGlobal",
         }
     }
 }

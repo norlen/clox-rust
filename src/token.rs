@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Copy, Clone)]
 pub struct Token<'a> {
     pub kind: TokenKind,
@@ -61,4 +63,51 @@ pub enum TokenKind {
 
     //Error,
     EOF,
+}
+
+impl fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            TokenKind::ParenLeft => "ParenLeft",
+            TokenKind::ParenRight => "ParenRight",
+            TokenKind::BraceLeft => "BraceLeft",
+            TokenKind::BraceRight => "BraceRight",
+            TokenKind::Comma => "Comma",
+            TokenKind::Dot => "Dot",
+            TokenKind::Minus => "Minus",
+            TokenKind::Plus => "Plus",
+            TokenKind::Semicolon => "Semicolon",
+            TokenKind::Slash => "Slash",
+            TokenKind::Star => "Star",
+            TokenKind::Bang => "Bang",
+            TokenKind::BangEqual => "BangEqual",
+            TokenKind::Equal => "Equal",
+            TokenKind::EqualEqual => "EqualEqual",
+            TokenKind::Greater => "Greater",
+            TokenKind::GreaterEqual => "GreaterEqual",
+            TokenKind::Less => "Less",
+            TokenKind::LessEqual => "LessEqual",
+            TokenKind::Identifier => "Identifier",
+            TokenKind::String => "String",
+            TokenKind::Number => "Number",
+            TokenKind::And => "And",
+            TokenKind::Class => "Class",
+            TokenKind::Else => "Else",
+            TokenKind::False => "False",
+            TokenKind::For => "For",
+            TokenKind::Fun => "Fun",
+            TokenKind::If => "If",
+            TokenKind::Nil => "Nil",
+            TokenKind::Or => "Or",
+            TokenKind::Print => "Print",
+            TokenKind::Return => "Return",
+            TokenKind::Super => "Super",
+            TokenKind::This => "This",
+            TokenKind::True => "True",
+            TokenKind::Var => "Var",
+            TokenKind::While => "While",
+            TokenKind::EOF => "EOF",
+        };
+        write!(f, "{}", s)
+    }
 }

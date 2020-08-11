@@ -102,7 +102,7 @@ impl<'a> Scanner<'a> {
                     return Err(ScannerError::InvalidCharacter);
                 }
             };
-            println!("created token: {:?}", token);
+            println!("SCANNER::[NEW_TOKEN] {:?}", token);
             Ok(token)
         } else {
             Ok(self.create_token(TokenKind::EOF))
