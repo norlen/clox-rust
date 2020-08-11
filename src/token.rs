@@ -61,7 +61,7 @@ pub enum TokenKind {
     Var,
     While,
 
-    //Error,
+    // Error,
     EOF,
 }
 

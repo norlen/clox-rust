@@ -9,18 +9,33 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CompileError {
-    #[error("compiler error: {}", .0)]
-    Default(String),
+    #[error("Number of compiler errors: {}", .0.len())]
+    Default(Vec<CompileError>),
 
-    #[error("error scanning source")]
+    #[error("Error scanning source")]
     ScannerError(#[from] ScannerError),
 
-    #[error("unexpected token: {}", .0)]
+    #[error("Error parsing number: {}", .0)]
+    ParseFloatError(#[from] std::num::ParseFloatError),
+
+    #[error("Unexpected token: {}", .0)]
     UnexpectedToken(TokenKind),
 
-    #[error("error while parsing")]
-    ParserError,
+    #[error("Could not find token while parsing (should not happen)")]
+    TokenNotFound,
+
+    #[error("Parse rule could not be found (should not happen)")]
+    ParseRuleNotFound,
+
+    #[error("Error: {}. On line {}", .message, .line)]
+    ParseError { message: &'static str, line: u64 },
+
+    // Used internally in consume to provide error messages to the user.
+    #[error("Internal error")]
+    InternalError,
 }
+
+type Result<T> = std::result::Result<T, CompileError>;
 
 pub struct Compiler<'src> {
     parser: Parser<'src>,
@@ -28,6 +43,7 @@ pub struct Compiler<'src> {
     source: &'src str,
     scanner: Scanner<'src>,
     mem: &'src mut StringCache,
+    errors: Vec<CompileError>,
 }
 
 impl<'s, 'src: 's> Compiler<'src> {
@@ -38,100 +54,126 @@ impl<'s, 'src: 's> Compiler<'src> {
             source,
             scanner: Scanner::new(source),
             mem,
+            errors: Vec::new(),
         }
     }
 
-    pub fn compile(mut self) -> Result<Chunk, CompileError> {
+    pub fn compile(mut self) -> Result<Chunk> {
         println!("COMPILING SOURCE: {}", self.source);
         self.advance();
 
-        while !self.match_token(TokenKind::EOF) {
-            self.declaration();
+        while !self.match_token(TokenKind::EOF)? {
+            if let Err(err) = self.declaration() {
+                eprintln!("COMPILER::[ERROR] {}", err);
+                self.errors.push(err);
+
+                // Exit if synchronize encounters any errors.
+                self.synchronize()?;
+            }
         }
 
-        self.emit_byte(OpCode::Return);
+        self.emit_byte(OpCode::Return)?;
 
-        if self.parser.had_error {
-            return Err(CompileError::Default(self.parser.error_msg))
+        if !self.errors.is_empty() {
+            println!("Display all errors encountered:");
+            for error in self.errors.iter() {
+                println!("\t{}", error);
+            }
+            Err(CompileError::Default(self.errors))
         } else {
             debug::disassemble_chunk(&self.chunk, &self.mem, "code");
-            // todo!();
+            Ok(self.chunk)
         }
-        Ok(self.chunk)
     }
 
+    fn error_msg(&self, message: &'static str) -> impl FnOnce(CompileError) -> CompileError {
+        let line = if let Some(token) = self.parser.previous {
+            token.line
+        } else {
+            0
+        };
+
+        move |error: CompileError| -> CompileError {
+            match error {
+                CompileError::InternalError => CompileError::ParseError { message, line },
+                _ => error,
+            }
+        }
+    }
+
+    /// Scan for the next token, ignores any errors while scanning.
+    /// But they are still added to the errors vector.
     fn advance(&mut self) {
         self.parser.previous = self.parser.current;
-
+        
         loop {
             match self.scanner.scan_token() {
                 Ok(token) => {
                     self.parser.current = Some(token);
-                    println!("COMPILER::[ADVANCE] {:?}", self.parser.current.unwrap());
-                    break;
+                    println!("COMPILER::[ADVANCE] {:?}", self.parser.current().unwrap());
+                    return;
                 }
-                Err(e) => {
-                    eprintln!("encountered error: {}", e);
-                    self.parser
-                        .error_at_current(self.parser.current.unwrap().data)
+                Err(err) => {
+                    eprintln!("Encountered error while scanning: {}", err);
+                    self.errors.push(err.into());
                 }
             }
         }
     }
 
-    fn match_token(&mut self, kind: TokenKind) -> bool {
-        let current_token = self.parser.current.unwrap();
+    fn match_token(&mut self, kind: TokenKind) -> Result<bool> {
+        let current_token = self.parser.current()?;
         if current_token.kind == kind {
             self.advance();
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
-    fn consume(&mut self, expected_token: TokenKind, error_msg: &str) {
-        if let Some(token) = self.parser.current {
-            if token.kind == expected_token {
-                self.advance();
-                return;
-            }
+    fn consume(&mut self, expected_token: TokenKind) -> Result<()> {
+        let token = self.parser.current()?;
+        if token.kind == expected_token {
+            self.advance();
+            Ok(())
+        } else {
+            Err(CompileError::InternalError)
         }
-        self.parser.error_at_current(error_msg);
     }
 
-    fn emit_byte(&mut self, op_code: OpCode) {
+    fn emit_byte(&mut self, op_code: OpCode) -> Result<()> {
         println!("COMPILER::[EMIT] {}", op_code);
-        self.chunk
-            .write(op_code, self.parser.previous.unwrap().line);
+        let line = self.parser.previous()?.line;
+        self.chunk.write(op_code, line);
+        Ok(())
     }
 
-    fn emit_bytes(&mut self, op_code: OpCode, index: u8) {
+    fn emit_bytes(&mut self, op_code: OpCode, index: u8) -> Result<()> {
         println!("COMPILER::[EMIT] {} -> {}", op_code, index);
-        let line = self.parser.previous.unwrap().line;
+        let line = self.parser.previous()?.line;
         self.chunk.write_index(op_code, index, line);
+        Ok(())
     }
 
-    fn synchronize(&mut self) {
-        self.parser.panic_mode = false;
-
+    fn synchronize(&mut self) -> Result<()> {
         // Try to skip tokens until something that looks like a statement boundary is found.
         loop {
-            let previous_kind = self.parser.previous.unwrap().kind;
+            let previous_kind = self.parser.previous()?.kind;
             if previous_kind == TokenKind::Semicolon {
-                return;
+                return Ok(());
             }
 
-            let current_kind = self.parser.current.unwrap().kind;
+            let current_kind = self.parser.current()?.kind;
             match current_kind {
-                TokenKind::EOF |
-                TokenKind::Class
+                TokenKind::EOF
+                | TokenKind::Class
                 | TokenKind::Fun
                 | TokenKind::Var
                 | TokenKind::For
                 | TokenKind::If
                 | TokenKind::While
                 | TokenKind::Print
-                | TokenKind::Return => return,
+                | TokenKind::Return => return Ok(()),
                 _ => {}
             }
 
@@ -139,9 +181,9 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
     }
 
-    fn parse_variable(&mut self, error_msg: &str) -> u8 {
-        self.consume(TokenKind::Identifier, error_msg);
-        self.identifier_constant(self.parser.previous.unwrap().data)
+    fn parse_variable(&mut self) -> Result<u8> {
+        self.consume(TokenKind::Identifier)?;
+        Ok(self.identifier_constant(self.parser.previous()?.data))
     }
 
     fn identifier_constant(&mut self, name: &str) -> u8 {
@@ -149,99 +191,118 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.chunk.add_constant(Value::String(cached_string))
     }
 
-    fn define_variable(&mut self, index: u8) {
-        self.emit_bytes(OpCode::DefineGlobal, index);
+    fn define_variable(&mut self, index: u8) -> Result<()> {
+        self.emit_bytes(OpCode::DefineGlobal, index)
     }
 
-    fn named_variable(&mut self, token: Token<'_>, can_assign: bool) {
+    fn named_variable(&mut self, token: Token<'_>, can_assign: bool) -> Result<()> {
         let arg = self.identifier_constant(token.data);
 
-        println!("COMPILER::[NAMED VARIABLE] {:?}\tCAN_ASSIGN: {}", token, can_assign);
-        
-        if self.match_token(TokenKind::Equal) && can_assign {
-            self.expression();
-            self.emit_bytes(OpCode::SetGlobal, arg);
+        println!(
+            "COMPILER::[NAMED VARIABLE] {:?}\tCAN_ASSIGN: {}",
+            token, can_assign
+        );
+
+        if self.match_token(TokenKind::Equal)? && can_assign {
+            self.expression()?;
+            self.emit_bytes(OpCode::SetGlobal, arg)?;
         } else {
-            self.emit_bytes(OpCode::GetGlobal, arg);
+            self.emit_bytes(OpCode::GetGlobal, arg)?;
         }
+        Ok(())
     }
 
-    fn variable(&mut self, can_assign: bool) {
-        self.named_variable(self.parser.previous.unwrap(), can_assign);
+    fn variable(&mut self, can_assign: bool) -> Result<()> {
+        self.named_variable(self.parser.previous()?, can_assign)?;
+        Ok(())
     }
 
-    fn declaration(&mut self) {
-        if self.match_token(TokenKind::Var) {
-            self.var_declaration();
+    fn declaration(&mut self) -> Result<()> {
+        if self.match_token(TokenKind::Var)? {
+            self.var_declaration()?;
         } else {
-            self.statement();
+            self.statement()?;
         }
-
-        if self.parser.panic_mode {
-            self.synchronize();
-        }
+        Ok(())
     }
 
-    fn var_declaration(&mut self) {
-        let global = self.parse_variable("expect variable name");
+    fn var_declaration(&mut self) -> Result<()> {
+        let global = self
+            .parse_variable()
+            .map_err(self.error_msg("Expect variable name"))?;
 
-        if self.match_token(TokenKind::Equal) {
-            self.expression();
+        if self.match_token(TokenKind::Equal)? {
+            self.expression()?;
         } else {
-            self.emit_byte(OpCode::Nil);
+            self.emit_byte(OpCode::Nil)?;
         }
-        self.consume(TokenKind::Semicolon, "Expect ';' after variable declaration.");
+        self.consume(TokenKind::Semicolon)
+            .map_err(self.error_msg("Expect ';' after variable declaration"))?;
 
-        self.define_variable(global);
+        self.define_variable(global)?;
+        Ok(())
     }
 
-    fn statement(&mut self) {
-        if self.match_token(TokenKind::Print) {
-            self.print_statement();
+    fn statement(&mut self) -> Result<()> {
+        if self.match_token(TokenKind::Print)? {
+            self.print_statement()?;
         } else {
-            self.expression_statement();
+            self.expression_statement()?;
         }
+        Ok(())
     }
 
-    fn expression_statement(&mut self) {
-        self.expression();
-        self.consume(TokenKind::Semicolon, "expect ';' after expression");
-        self.emit_byte(OpCode::Pop);
+    fn expression_statement(&mut self) -> Result<()> {
+        self.expression()?;
+        self.consume(TokenKind::Semicolon)
+            .map_err(self.error_msg("Expect ';' after expression"))?;
+        self.emit_byte(OpCode::Pop)?;
+        Ok(())
     }
 
-    fn print_statement(&mut self) {
-        self.expression();
-        self.consume(TokenKind::Semicolon, "expect ';' after value");
-        self.emit_byte(OpCode::Print);
+    fn print_statement(&mut self) -> Result<()> {
+        self.expression()?;
+        self.consume(TokenKind::Semicolon)
+            .map_err(self.error_msg("Expect ';' after value"))?;
+        self.emit_byte(OpCode::Print)?;
+        Ok(())
     }
 
-    fn expression(&mut self) {
-        self.parse_precedence(Precedence::Assignment);
+    fn expression(&mut self) -> Result<()> {
+        self.parse_precedence(Precedence::Assignment)?;
+        Ok(())
     }
 
-    fn grouping(&mut self, _can_assign: bool) {
-        self.expression();
-        self.consume(TokenKind::ParenRight, "expect ')' after expression.");
+    fn grouping(&mut self, _can_assign: bool) -> Result<()> {
+        self.expression()?;
+        self.consume(TokenKind::ParenRight)
+            .map_err(self.error_msg("Expect ')' after expression"))?;
+        Ok(())
     }
 
-    fn number(&mut self, _can_assign: bool) {
-        let value = self.parser.previous.unwrap().data.parse::<f64>().unwrap();
+    fn number(&mut self, _can_assign: bool) -> Result<()> {
+        let value = self.parser.previous()?.data.parse::<f64>()?;
         let index = self.chunk.add_constant(Value::Number(value));
-        self.emit_bytes(OpCode::Constant, index);
+        self.emit_bytes(OpCode::Constant, index)
     }
 
-    fn string(&mut self, _can_assign: bool) {
-        let src_str = self.parser.previous.as_ref().unwrap().data;
+    fn string(&mut self, _can_assign: bool) -> Result<()> {
+        let src_str = self
+            .parser
+            .previous
+            .as_ref()
+            .ok_or(CompileError::TokenNotFound)?
+            .data;
         // Skip " at beginning and end.
         let string = src_str[1..src_str.len() - 1].to_owned();
         let cached_index = self.mem.cache(string);
         let index = self.chunk.add_constant(Value::String(cached_index));
-        self.emit_bytes(OpCode::Constant, index);
+        self.emit_bytes(OpCode::Constant, index)
     }
 
-    fn unary(&mut self, _can_assign: bool) {
-        let operator_type = self.parser.previous.unwrap().kind;
-        self.parse_precedence(Precedence::Unary);
+    fn unary(&mut self, _can_assign: bool) -> Result<()> {
+        let operator_type = self.parser.previous()?.kind;
+        self.parse_precedence(Precedence::Unary)?;
 
         match operator_type {
             TokenKind::Minus => self.emit_byte(OpCode::Negate),
@@ -251,82 +312,93 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
     }
 
-    fn binary(&mut self) {
-        let operator_type = self.parser.previous.unwrap().kind;
+    fn binary(&mut self) -> Result<()> {
+        let operator_type = self.parser.previous()?.kind;
 
         // Compile the right operand.
-        let rule = self.get_rule(operator_type).unwrap();
-        let higher_prec = unsafe { ::std::mem::transmute(rule.precedence as u8 + 1) };
-        println!("COMPILER::[BINARY] {:?}, prec_old: {:?}, prec_new: {:?}, operator type: {:?}", rule, rule.precedence, higher_prec, operator_type);
-        self.parse_precedence(higher_prec);
+        let rule = self
+            .get_rule(operator_type)
+            .ok_or(CompileError::ParseRuleNotFound)?;
+        let higher_precedence = rule.precedence.higher();
+        println!(
+            "COMPILER::[BINARY] {:?}, prec_old: {:?}, prec_new: {:?}, operator type: {:?}",
+            rule, rule.precedence, higher_precedence, operator_type
+        );
+        self.parse_precedence(higher_precedence)?;
 
         // Emit the operator instruction.
         match operator_type {
-            TokenKind::Plus => self.emit_byte(OpCode::Add),
-            TokenKind::Minus => self.emit_byte(OpCode::Subtract),
-            TokenKind::Star => self.emit_byte(OpCode::Multiply),
-            TokenKind::Slash => self.emit_byte(OpCode::Divide),
+            TokenKind::Plus => self.emit_byte(OpCode::Add)?,
+            TokenKind::Minus => self.emit_byte(OpCode::Subtract)?,
+            TokenKind::Star => self.emit_byte(OpCode::Multiply)?,
+            TokenKind::Slash => self.emit_byte(OpCode::Divide)?,
             TokenKind::BangEqual => {
-                self.emit_byte(OpCode::Equal);
-                self.emit_byte(OpCode::Not);
+                self.emit_byte(OpCode::Equal)?;
+                self.emit_byte(OpCode::Not)?;
             }
-            TokenKind::EqualEqual => self.emit_byte(OpCode::Equal),
-            TokenKind::Greater => self.emit_byte(OpCode::Greater),
+            TokenKind::EqualEqual => self.emit_byte(OpCode::Equal)?,
+            TokenKind::Greater => self.emit_byte(OpCode::Greater)?,
             TokenKind::GreaterEqual => {
-                self.emit_byte(OpCode::Less);
-                self.emit_byte(OpCode::Not);
+                self.emit_byte(OpCode::Less)?;
+                self.emit_byte(OpCode::Not)?;
             }
-            TokenKind::Less => self.emit_byte(OpCode::Less),
+            TokenKind::Less => self.emit_byte(OpCode::Less)?,
             TokenKind::LessEqual => {
-                self.emit_byte(OpCode::Greater);
-                self.emit_byte(OpCode::Not);
+                self.emit_byte(OpCode::Greater)?;
+                self.emit_byte(OpCode::Not)?;
             }
             _ => panic!(),
         }
+        Ok(())
     }
 
-    fn literal(&mut self, _can_assign: bool) {
-        let op_kind = self.parser.previous.unwrap().kind;
+    fn literal(&mut self, _can_assign: bool) -> Result<()> {
+        let op_kind = self.parser.previous()?.kind;
         match op_kind {
-            TokenKind::Nil => self.emit_byte(OpCode::Nil),
-            TokenKind::True => self.emit_byte(OpCode::True),
-            TokenKind::False => self.emit_byte(OpCode::False),
+            TokenKind::Nil => self.emit_byte(OpCode::Nil)?,
+            TokenKind::True => self.emit_byte(OpCode::True)?,
+            TokenKind::False => self.emit_byte(OpCode::False)?,
             _ => panic!(),
         }
+        Ok(())
     }
 
     fn get_rule(&'s self, kind: TokenKind) -> Option<&ParseRule<'s, 'src>> {
         Compiler::RULES_TABLE.get(kind as usize)
     }
 
-    fn parse_precedence(&'s mut self, precedence: Precedence) {
+    fn parse_precedence(&'s mut self, precedence: Precedence) -> Result<()> {
         self.advance();
 
-        let token_kind = self.parser.previous.unwrap().kind;
-        let rule = self.get_rule(token_kind).unwrap();
-        let prefix_rule = rule.prefix.unwrap();
+        let token_kind = self.parser.previous()?.kind;
+        let rule = self
+            .get_rule(token_kind)
+            .ok_or(CompileError::ParseRuleNotFound)?;
+        let prefix_rule = rule.prefix.ok_or(CompileError::ParseRuleNotFound)?;
 
         let can_assign = precedence <= Precedence::Assignment;
-        prefix_rule(self, can_assign);
+        prefix_rule(self, can_assign)?;
 
         while precedence
             <= self
-                .get_rule(self.parser.current.unwrap().kind)
-                .unwrap()
+                .get_rule(self.parser.current()?.kind)
+                .ok_or(CompileError::ParseRuleNotFound)?
                 .precedence
         {
             self.advance();
             let infix_rule = self
-                .get_rule(self.parser.previous.unwrap().kind)
-                .unwrap()
+                .get_rule(self.parser.previous()?.kind)
+                .ok_or(CompileError::ParseRuleNotFound)?
                 .infix
-                .unwrap();
-            infix_rule(self);
+                .ok_or(CompileError::ParseRuleNotFound)?;
+            infix_rule(self)?;
         }
 
-        if can_assign && self.match_token(TokenKind::Equal) {
+        if can_assign && self.match_token(TokenKind::Equal)? {
             panic!("invalid assigment target");
         }
+
+        Ok(())
     }
 
     #[rustfmt::skip]
@@ -373,8 +445,8 @@ impl<'s, 'src: 's> Compiler<'src> {
     ];
 }
 
-type PrefixFunction<'r, 's> = fn(&'r mut Compiler<'s>, bool);
-type InfixFunction<'r, 's> = fn(&'r mut Compiler<'s>);
+type PrefixFunction<'r, 's> = fn(&'r mut Compiler<'s>, bool) -> Result<()>;
+type InfixFunction<'r, 's> = fn(&'r mut Compiler<'s>) -> Result<()>;
 
 #[derive(Debug)]
 struct ParseRule<'r, 's> {
@@ -386,7 +458,7 @@ struct ParseRule<'r, 's> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 enum Precedence {
-    None = 0,
+    None,
     Assignment, // =
     Or,         // or
     And,        // and
@@ -399,12 +471,43 @@ enum Precedence {
     Primary,
 }
 
+impl Precedence {
+    fn higher(&self) -> Precedence {
+        match self {
+            Precedence::None => Precedence::Assignment,
+            Precedence::Assignment => Precedence::Or,
+            Precedence::Or => Precedence::And,
+            Precedence::And => Precedence::Equality,
+            Precedence::Equality => Precedence::Comparison,
+            Precedence::Comparison => Precedence::Term,
+            Precedence::Term => Precedence::Factor,
+            Precedence::Factor => Precedence::Unary,
+            Precedence::Unary => Precedence::Call,
+            Precedence::Call => Precedence::Primary,
+            Precedence::Primary => Precedence::Primary,
+        }
+    }
+
+    fn lower(&self) -> Precedence {
+        match self {
+            Precedence::None => Precedence::None,
+            Precedence::Assignment => Precedence::None,
+            Precedence::Or => Precedence::Assignment,
+            Precedence::And => Precedence::Or,
+            Precedence::Equality => Precedence::And,
+            Precedence::Comparison => Precedence::Equality,
+            Precedence::Term => Precedence::Comparison,
+            Precedence::Factor => Precedence::Term,
+            Precedence::Unary => Precedence::Factor,
+            Precedence::Call => Precedence::Unary,
+            Precedence::Primary => Precedence::Call,
+        }
+    }
+}
+
 struct Parser<'a> {
     current: Option<Token<'a>>,
     previous: Option<Token<'a>>,
-    had_error: bool,
-    panic_mode: bool,
-    error_msg: String,
 }
 
 impl<'a> Parser<'a> {
@@ -412,34 +515,15 @@ impl<'a> Parser<'a> {
         Self {
             current: None,
             previous: None,
-            had_error: false,
-            panic_mode: false,
-            error_msg: "".to_owned(),
         }
     }
 
-    fn error_at_current(&mut self, msg: &str) {
-        self.error_at(&self.current.unwrap(), msg);
+    fn previous(&self) -> Result<Token<'a>> {
+        self.previous.ok_or(CompileError::TokenNotFound)
     }
 
-    fn error(&mut self, msg: &str) {
-        self.error_at(&self.previous.unwrap(), msg);
-    }
-
-    fn error_at(&mut self, token: &Token<'_>, msg: &str) {
-        if self.panic_mode {
-            return;
-        }
-        self.panic_mode = true;
-        // let where_text = if token.kind == TokenKind::EOF {
-        //     "at end"
-        // } else {
-        //     format!("at {}", )
-        // }
-        let msg = format!("[line {}] Error: {}", token.line, msg);
-        eprintln!("{}", msg);
-        self.error_msg = msg;
-        self.had_error = true;
+    fn current(&self) -> Result<Token<'a>> {
+        self.current.ok_or(CompileError::TokenNotFound)
     }
 }
 
