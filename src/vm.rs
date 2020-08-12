@@ -410,24 +410,4 @@ mod tests {
         let mut vm = VM::new(VM_OPTIONS);
         assert!(vm.interpret(source).is_ok());
     }
-
-    #[test]
-    fn vm_locals_shadowing() {
-        let source = r#"
-        {
-            var a = 1;
-            {
-                var a = a;
-                {
-                    var a = a;
-                    {
-                        var a = a;
-                    }
-                }
-            }
-        }
-        "#;
-        let mut vm = VM::new(VM_OPTIONS);
-        assert!(vm.interpret(source).is_ok());
-    }
 }

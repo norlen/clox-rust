@@ -725,10 +725,17 @@ mod tests {
     }
 
     #[test]
-    fn compile_shadow_global_same_name() {
-        let source = "var a = 1; { var a = a; }";
+    fn compile_assign_to_itself() {
+        let source = r#"
+        var a = 1;
+        {
+            var a = a;
+            {
+                var a = a;
+            }
+        }"#;
         let mut cache = StringCache::new();
         let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_ok());
+        assert!(compiler.compile().is_err());
     }
 }
