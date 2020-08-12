@@ -5,6 +5,7 @@ use crate::string_cache::StringCache;
 
 pub fn disassemble_chunk(chunk: &Chunk, strings: &StringCache, name: &str) {
     println!("== {} ==", name);
+    println!("[CODE] {:?}", chunk.code);
 
     let mut instruction = 0;
     let mut offset = 0;
@@ -25,36 +26,6 @@ pub fn disassemble_chunk(chunk: &Chunk, strings: &StringCache, name: &str) {
     }
 }
 
-pub fn disassemble_instruction_i<'a>(
-    chunk: &'a Chunk,
-    strings: &'a StringCache,
-    op_code: u8,
-    ip: &mut impl Iterator<Item = &'a u8>,
-) -> (String, usize) {
-    let op_code = OpCode::from(op_code);
-
-    let constant_instruction = || {
-        let constant = chunk.read_constant_iter(ip).unwrap();
-        match constant {
-            Value::String(index) => {
-                let cached = strings.get(*index).unwrap();
-                (format!("{}\t[index] {}\t[contains] {}", op_code.name(), index, cached), 2)
-            },
-            _ => (format!("{}\t[value]{}", op_code.name(), constant), 2),
-        }
-    };
-
-    let byte_instruction = || ("".to_owned(), 1337);
-
-    match op_code {
-        OpCode::SetLocal | OpCode::GetLocal => {
-            let byte = ip.next().unwrap();
-            (format!("{}\t[slot] {}", op_code.name(), byte), 2)
-        },
-        _ => get_string(op_code, constant_instruction, byte_instruction)
-    }
-}
-
 pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usize) -> (String, usize) {
     let op_code = chunk.code.get(index).unwrap();
     let op_code = OpCode::from(op_code);
@@ -66,7 +37,7 @@ pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usiz
                 let cached = strings.get(*index).unwrap();
                 (format!("{}\t[index] {}\t[contains] {}", op_code.name(), index, cached), 2)
             },
-            _ => (format!("{}\t[value]{}", op_code.name(), constant), 2),
+            _ => (format!("{}\t[value] {}", op_code.name(), constant), 2),
         }
     };
 
@@ -75,14 +46,14 @@ pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usiz
         (format!("{}\t[slot] {}", op_code.name(), byte), 2)
     };
 
-    get_string(op_code, constant_instruction, byte_instruction)
-}
+    let jump_instruction = || {
+        let byte0 = chunk.code.get(index + 1).unwrap().clone() as i64;
+        let byte1 = chunk.code.get(index + 2).unwrap().clone() as i64;
+        let jump = (byte0 << 8) | byte1;
+        let text = format!("{}\t[JUMP] {}", op_code.name(), jump);
+        (text, 3)
+    };
 
-fn get_string<F, G>(op_code: OpCode, constant_instruction: F, byte_instruction: G) -> (String, usize)
-where
-    F: FnOnce() -> (String, usize),
-    G: FnOnce() -> (String, usize),
-{
     match op_code {
         OpCode::Return
         | OpCode::Negate
@@ -105,6 +76,7 @@ where
         | OpCode::SetGlobal => constant_instruction(),
         | OpCode::GetLocal
         | OpCode::SetLocal => byte_instruction(),
+        | OpCode::JumpIfFalse => jump_instruction(),
         
         // OpCode::ConstantLong => {
         //     let constant = chunk.read_constant_long_iter(ip).unwrap();

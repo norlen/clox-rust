@@ -33,6 +33,9 @@ pub enum CompileError {
     #[error("Too many local variables in function.")]
     LocalCount,
 
+    #[error("Cannot jump more than 2^16 bytes.")]
+    InvalidJump,
+
     #[error("Variable {} already declared in this scope", .0)]
     VariableAlreadyDeclared(String),
 
@@ -187,6 +190,29 @@ impl<'s, 'src: 's> Compiler<'src> {
         let line = self.parser.previous()?.line;
         self.chunk.write_index(op_code, index, line);
         Ok(())
+    }
+
+    fn emit_jump(&mut self, op_code: OpCode) -> Result<usize> {
+        println!("COMPILER\t[EMIT JMP]\t\t{}", op_code);
+        let line = self.parser.previous()?.line;
+        self.chunk.write(op_code, line);
+        self.chunk.write_byte(0xff, line);
+        self.chunk.write_byte(0xff, line);
+        Ok(self.chunk.code.len() - 2)
+    }
+
+    fn patch_jump(&mut self, offset: usize) -> Result<()> {
+        let jump_from = self.chunk.code.len() as i64;
+
+        // Adjust by -2 to account the the size of the jump bytes.
+        let jump = jump_from - offset as i64 - 2;
+        if jump > std::u16::MAX as i64 {
+            Err(CompileError::InvalidJump)
+        } else {
+            self.chunk.code[offset] = ((jump >> 8) & 0xff) as u8;
+            self.chunk.code[offset + 1] = (jump & 0xff) as u8;
+            Ok(())
+        }
     }
 
     fn synchronize(&mut self) -> Result<()> {
@@ -347,6 +373,8 @@ impl<'s, 'src: 's> Compiler<'src> {
     fn statement(&mut self) -> Result<()> {
         if self.match_token(TokenKind::Print)? {
             self.print_statement()?;
+        } else if self.match_token(TokenKind::If)? {
+            self.if_statement()?;
         } else if self.match_token(TokenKind::BraceLeft)? {
             self.scope_enter();
             self.block()?;
@@ -355,6 +383,17 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.expression_statement()?;
         }
         Ok(())
+    }
+
+    fn if_statement(&mut self) -> Result<()> {
+        self.consume(TokenKind::ParenLeft).map_err(self.error_msg("Expect ')' after 'if'."))?;
+        self.expression()?;
+        self.consume(TokenKind::ParenRight).map_err(self.error_msg("Expect ')' after condition"))?;
+
+        let then_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+        self.statement()?;
+
+        self.patch_jump(then_jump)
     }
 
     fn scope_enter(&mut self) {
@@ -737,5 +776,13 @@ mod tests {
         let mut cache = StringCache::new();
         let compiler = Compiler::new(source, &mut cache);
         assert!(compiler.compile().is_err());
+    }
+
+    #[test]
+    fn compile_if_statement() {
+        let source = "if (1) {}";
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        assert!(compiler.compile().is_ok());
     }
 }

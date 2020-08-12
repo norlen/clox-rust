@@ -20,16 +20,21 @@ pub struct Scanner<'a> {
     line: u64,
 }
 
-const KEYWORDS: [(&'static str, TokenKind); 11] = [
+const KEYWORDS: [(&'static str, TokenKind); 16] = [
     ("and", TokenKind::And),
     ("class", TokenKind::Class),
     ("else", TokenKind::Else),
+    ("false", TokenKind::False),
+    ("for", TokenKind::For),
+    ("fun", TokenKind::Fun),
     ("if", TokenKind::If),
     ("nil", TokenKind::Nil),
     ("or", TokenKind::Or),
     ("print", TokenKind::Print),
     ("return", TokenKind::Return),
     ("super", TokenKind::Super),
+    ("this", TokenKind::This),
+    ("true", TokenKind::True),
     ("var", TokenKind::Var),
     ("while", TokenKind::While),
 ];

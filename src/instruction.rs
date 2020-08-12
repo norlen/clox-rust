@@ -25,6 +25,7 @@ pub enum OpCode {
     SetGlobal,
     GetLocal,
     SetLocal,
+    JumpIfFalse,
 }
 
 impl Into<u8> for OpCode {
@@ -70,6 +71,7 @@ impl OpCode {
             OpCode::SetGlobal => "SetGlobal",
             OpCode::GetLocal => "GetLocal",
             OpCode::SetLocal => "SetLocal",
+            OpCode::JumpIfFalse => "JumpIfFalse",
         }
     }
 }

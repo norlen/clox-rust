@@ -19,11 +19,7 @@ mod value;
 mod vm;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let options = vm::VMOptions {
-        trace_execution: true,
-    };
-
-    let mut vm = vm::VM::new(options);
+    let mut vm = vm::VM::new();
     repl(&mut vm)
 }
 

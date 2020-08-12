@@ -19,6 +19,11 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    pub fn write_byte(&mut self, byte: u8, line: u64) {
+        self.code.push(byte);
+        self.lines.push(line);
+    }
+
     pub fn write_index(&mut self, op_code: OpCode, index: u8, line: u64) {
         self.code.push(op_code.into());
         self.code.push(index);
