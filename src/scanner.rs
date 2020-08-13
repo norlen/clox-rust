@@ -124,10 +124,12 @@ impl<'a> Scanner<'a> {
                             // Found comment.
                             while let Some(ch) = self.cursor.advance() {
                                 if ch == '\n' {
-                                    // Continue if there is even more whitespace on the next line.
-                                    continue;
+                                    self.line += 1;
+                                    break;
                                 }
                             }
+                            // Continue as there might be even more whitespace on the next line.
+                            continue;
                         }
                     }
                     // Otherwise we're done if it isn't a comment or we got None somewhere.

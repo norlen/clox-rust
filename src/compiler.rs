@@ -168,13 +168,13 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
     }
 
-    fn consume(&mut self, expected_token: TokenKind) -> Result<()> {
+    fn consume(&mut self, expected_token: TokenKind, error_message: &'static str) -> Result<()> {
         let token = self.parser.current()?;
         if token.kind == expected_token {
             self.advance();
             Ok(())
         } else {
-            Err(CompileError::InternalError)
+            Err(CompileError::InternalError).map_err(self.error_msg(error_message))
         }
     }
 
@@ -199,6 +199,24 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.chunk.write_byte(0xff, line);
         self.chunk.write_byte(0xff, line);
         Ok(self.chunk.code.len() - 2)
+    }
+
+    /// Emits the loop instruction to jump backwards to `loop_start`. `loop_start` cannot contain
+    /// a value higher than `std::u16::MAX` as jumps further than that are not supported yet.
+    /// The functions emits `OpCode::Loop` instruction followed by first 16 bits in `loop_start`.
+    fn emit_loop(&mut self, loop_start: usize) -> Result<()> {
+        self.emit_byte(OpCode::Loop)?;
+
+        // We have to skip over the next to byte as well which contains the jump location.
+        let offset = self.chunk.code.len() - loop_start + 2;
+        if offset > std::u16::MAX as usize {
+            Err(CompileError::InvalidJump)
+        } else {
+            let line = self.parser.previous()?.line;
+            self.chunk.write_byte((offset >> 8) as u8 & 0xff, line);
+            self.chunk.write_byte((offset & 0xff) as u8, line);
+            Ok(())
+        }
     }
 
     fn patch_jump(&mut self, offset: usize) -> Result<()> {
@@ -242,7 +260,7 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn parse_variable(&mut self) -> Result<u8> {
-        self.consume(TokenKind::Identifier)?;
+        self.consume(TokenKind::Identifier, "Expect variable name")?;
 
         self.declare_variable()?;
         if self.scope_depth > 0 {
@@ -354,20 +372,16 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn var_declaration(&mut self) -> Result<()> {
-        let global = self
-            .parse_variable()
-            .map_err(self.error_msg("Expect variable name"))?;
+        let global = self.parse_variable()?;
 
         if self.match_token(TokenKind::Equal)? {
             self.expression()?;
         } else {
             self.emit_byte(OpCode::Nil)?;
         }
-        self.consume(TokenKind::Semicolon)
-            .map_err(self.error_msg("Expect ';' after variable declaration"))?;
+        self.consume(TokenKind::Semicolon, "Expect ';' after variable declaration")?;
 
-        self.define_variable(global)?;
-        Ok(())
+        self.define_variable(global)
     }
 
     fn statement(&mut self) -> Result<()> {
@@ -375,6 +389,10 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.print_statement()?;
         } else if self.match_token(TokenKind::If)? {
             self.if_statement()?;
+        } else if self.match_token(TokenKind::While)? {
+            self.while_statement()?;
+        } else if self.match_token(TokenKind::For)? {
+            self.for_statement()?;
         } else if self.match_token(TokenKind::BraceLeft)? {
             self.scope_enter();
             self.block()?;
@@ -385,15 +403,97 @@ impl<'s, 'src: 's> Compiler<'src> {
         Ok(())
     }
 
-    fn if_statement(&mut self) -> Result<()> {
-        self.consume(TokenKind::ParenLeft).map_err(self.error_msg("Expect ')' after 'if'."))?;
-        self.expression()?;
-        self.consume(TokenKind::ParenRight).map_err(self.error_msg("Expect ')' after condition"))?;
+    fn for_statement(&mut self) -> Result<()> {
+        self.scope_enter();
+        self.consume(TokenKind::ParenLeft, "Expect '(' after 'for'")?;
 
-        let then_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+        // Initializer clause.
+        if self.match_token(TokenKind::Semicolon)? {
+
+        } else if self.match_token(TokenKind::Var)? {
+            self.var_declaration()?;
+        } else {
+            self.expression_statement()?;
+        }
+
+        // Condition clause.
+        let mut loop_start = self.chunk.code.len();
+        let exit_jump = if self.match_token(TokenKind::Semicolon)? {
+            None
+        } else {
+            self.expression()?;
+            self.consume(TokenKind::Semicolon, "Expect ';' after loop condition")?;
+
+            // Jump out of the loop if the condition is false.
+            let exit_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+            self.emit_byte(OpCode::Pop)?;
+            Some(exit_jump)
+        };
+        
+        // Increment clause.
+        // This is a bit weird, since we want this to run after the for loop body
+        // we jump to the increment location (loop_start), we set it to the start
+        // of the increment. And since this code is before the loop body we have an
+        // unconditional jump that goes straight to the body, and after the expression
+        // we jump to the actual start of the loop, i.e. the condition clause.
+        if !self.match_token(TokenKind::ParenRight)? {
+            let body_jump = self.emit_jump(OpCode::Jump)?;
+            let increment_start = self.chunk.code.len();
+
+            self.expression()?;
+            self.emit_byte(OpCode::Pop)?;
+            self.consume(TokenKind::ParenRight, "Expect ')' after for clauses")?;
+            
+            self.emit_loop(loop_start)?;
+            loop_start = increment_start;
+            self.patch_jump(body_jump)?;
+        }
+
         self.statement()?;
 
-        self.patch_jump(then_jump)
+        self.emit_loop(loop_start)?;
+        if let Some(exit_jump) = exit_jump {
+            self.patch_jump(exit_jump)?;
+            self.emit_byte(OpCode::Pop)?;
+        }
+        self.scope_leave()
+    }
+
+    fn while_statement(&mut self) -> Result<()> {
+        // Get the location we want to jump to on each loop iteration.
+        let loop_start = self.chunk.code.len();
+
+        self.consume(TokenKind::ParenLeft, "Expect '(' after 'while'")?;
+        self.expression()?;
+        self.consume(TokenKind::ParenRight, "Expect ')' after 'while'")?;
+
+        let exit_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+        self.emit_byte(OpCode::Pop)?;
+
+        self.statement()?;
+        self.emit_loop(loop_start)?;
+
+        self.patch_jump(exit_jump)?;
+        self.emit_byte(OpCode::Pop)
+    }
+
+    fn if_statement(&mut self) -> Result<()> {
+        self.consume(TokenKind::ParenLeft, "Expect ')' after 'if'")?;
+        self.expression()?;
+        self.consume(TokenKind::ParenRight, "Expect ')' after condition")?;
+
+        let then_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+        self.emit_byte(OpCode::Pop)?; // Pop condition if condition is false.
+        self.statement()?;
+        let else_jump = self.emit_jump(OpCode::Jump)?;
+
+        self.patch_jump(then_jump)?;
+        self.emit_byte(OpCode::Pop)?; // Pop condition if condition is true.
+    
+        if self.match_token(TokenKind::Else)? {
+            self.statement()?;
+        }
+        self.patch_jump(else_jump)
     }
 
     fn scope_enter(&mut self) {
@@ -421,21 +521,19 @@ impl<'s, 'src: 's> Compiler<'src> {
             }
             self.decl()?;
         }
-        self.consume(TokenKind::BraceRight).map_err(self.error_msg("Expect '}' after a block"))
+        self.consume(TokenKind::BraceRight, "Expect '}' after a block")
     }
 
     fn expression_statement(&mut self) -> Result<()> {
         self.expression()?;
-        self.consume(TokenKind::Semicolon)
-            .map_err(self.error_msg("Expect ';' after expression"))?;
+        self.consume(TokenKind::Semicolon, "Expect ';' after expression")?;
         self.emit_byte(OpCode::Pop)?;
         Ok(())
     }
 
     fn print_statement(&mut self) -> Result<()> {
         self.expression()?;
-        self.consume(TokenKind::Semicolon)
-            .map_err(self.error_msg("Expect ';' after value"))?;
+        self.consume(TokenKind::Semicolon, "Expect ';' after value")?;
         self.emit_byte(OpCode::Print)?;
         Ok(())
     }
@@ -447,8 +545,7 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     fn grouping(&mut self, _can_assign: bool) -> Result<()> {
         self.expression()?;
-        self.consume(TokenKind::ParenRight)
-            .map_err(self.error_msg("Expect ')' after expression"))?;
+        self.consume(TokenKind::ParenRight, "Expect ')' after expression")?;
         Ok(())
     }
 
@@ -482,6 +579,24 @@ impl<'s, 'src: 's> Compiler<'src> {
             // Unreachable.
             _ => panic!(),
         }
+    }
+
+    fn and(&mut self) -> Result<()> {
+        let end_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+        self.emit_byte(OpCode::Pop)?;
+        self.parse_precedence(Precedence::And)?;
+        self.patch_jump(end_jump)
+    }
+
+    fn or(&mut self) -> Result<()> {
+        let else_jump = self.emit_jump(OpCode::JumpIfFalse)?;
+        let end_jump = self.emit_jump(OpCode::Jump)?;
+
+        self.patch_jump(else_jump)?;
+        self.emit_byte(OpCode::Pop)?;
+
+        self.parse_precedence(Precedence::Or)?;
+        self.patch_jump(end_jump)
     }
 
     fn binary(&mut self) -> Result<()> {
@@ -597,7 +712,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         ParseRule { prefix: Some(Compiler::variable), infix: None                   , precedence: Precedence::None        }, // Identifier
         ParseRule { prefix: Some(Compiler::string)  , infix: None                   , precedence: Precedence::None        }, // String
         ParseRule { prefix: Some(Compiler::number)  , infix: None                   , precedence: Precedence::None        }, // Number
-        ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // And
+        ParseRule { prefix: None                    , infix: Some(Compiler::and)    , precedence: Precedence::And         }, // And
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Class
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Else
         ParseRule { prefix: Some(Compiler::literal) , infix: None                   , precedence: Precedence::None        }, // False
@@ -605,7 +720,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Fun
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // If
         ParseRule { prefix: Some(Compiler::literal) , infix: None                   , precedence: Precedence::None        }, // Nil
-        ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Or
+        ParseRule { prefix: None                    , infix: Some(Compiler::or)     , precedence: Precedence::Or          }, // Or
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Print
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Return
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Super
@@ -711,28 +826,28 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
+    fn compile(source: &'static str) -> Result<Chunk> {
+        let mut cache = StringCache::new();
+        let compiler = Compiler::new(source, &mut cache);
+        compiler.compile()
+    }
+
     #[test]
     fn simple_test() {
-        let code = "(-1 + 2) * 3 - -4;";
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(code, &mut cache);
-        assert!(compiler.compile().is_ok());
+        let source = "(-1 + 2) * 3 - -4;";
+        assert!(compile(source).is_ok());
     }
 
     #[test]
     fn compile_math() {
         let source = "1.5 + 1.3 * 3.5;";
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_ok());
+        assert!(compile(source).is_ok());
     }
 
     #[test]
     fn compile_print() {
         let source = "print 1;";
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_ok());
+        assert!(compile(source).is_ok());
     }
 
     #[test]
@@ -742,25 +857,19 @@ mod tests {
         var breakfast = "beignets with " + beverage;
         print breakfast;
         "#;
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_ok());
+        assert!(compile(source).is_ok());
     }
 
     #[test]
     fn compile_weird_assignments() {
         let source = "a * b = c + d;";
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_err());
+        assert!(compile(source).is_err());
     }
 
     #[test]
     fn compile_weird_expr() {
         let source = "1 * 2 * 3 * 4 * 5 * 6 * 7 * 8 * 9 * 10 * 11 * 12;";
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_ok());
+        assert!(compile(source).is_ok());
     }
 
     #[test]
@@ -773,16 +882,34 @@ mod tests {
                 var a = a;
             }
         }"#;
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_err());
+        assert!(compile(source).is_err());
     }
 
     #[test]
     fn compile_if_statement() {
         let source = "if (1) {}";
-        let mut cache = StringCache::new();
-        let compiler = Compiler::new(source, &mut cache);
-        assert!(compiler.compile().is_ok());
+        assert!(compile(source).is_ok());
+    }
+
+    #[test]
+    fn compile_and_expr() {
+        let source = "print true and false;";
+        assert!(compile(source).is_ok());
+    }
+
+    #[test]
+    fn compile_or_expr() {
+        let source = "print true or false;";
+        assert!(compile(source).is_ok());
+    }
+
+    #[test]
+    fn compile_while() {
+        assert!(compile("while (true) {}").is_ok());
+    }
+
+    #[test]
+    fn compile_for_basic() {
+        assert!(compile("for (var i = 0; i < 10; i = i + 1) {}").is_ok());
     }
 }

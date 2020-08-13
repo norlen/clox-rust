@@ -35,26 +35,25 @@ pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usiz
         match constant {
             Value::String(index) => {
                 let cached = strings.get(*index).unwrap();
-                (format!("{}\t[index] {}\t[contains] {}", op_code.name(), index, cached), 2)
+                format!("[index] {}\t[variable] {}", index, cached)
             },
-            _ => (format!("{}\t[value] {}", op_code.name(), constant), 2),
+            _ => format!("[value] {}", constant),
         }
     };
 
     let byte_instruction = || {
         let byte = chunk.code.get(index + 1).unwrap();
-        (format!("{}\t[slot] {}", op_code.name(), byte), 2)
+        format!("[slot] {}", byte)
     };
 
-    let jump_instruction = || {
+    let jump_instruction = |sign: i64| {
         let byte0 = chunk.code.get(index + 1).unwrap().clone() as i64;
         let byte1 = chunk.code.get(index + 2).unwrap().clone() as i64;
         let jump = (byte0 << 8) | byte1;
-        let text = format!("{}\t[JUMP] {}", op_code.name(), jump);
-        (text, 3)
+        format!("[JUMP] {:+} ({})", sign * jump, index as i64 + 3 + sign * jump)
     };
 
-    match op_code {
+    let (text, bytes) = match op_code {
         OpCode::Return
         | OpCode::Negate
         | OpCode::Add
@@ -69,18 +68,21 @@ pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usiz
         | OpCode::Greater
         | OpCode::Less
         | OpCode::Print
-        | OpCode::Pop => (format!("{}", op_code.name()), 1),
+        | OpCode::Pop => ("".to_owned(), 1),
         OpCode::Constant
         | OpCode::DefineGlobal
         | OpCode::GetGlobal
-        | OpCode::SetGlobal => constant_instruction(),
+        | OpCode::SetGlobal => (constant_instruction(), 2),
         | OpCode::GetLocal
-        | OpCode::SetLocal => byte_instruction(),
-        | OpCode::JumpIfFalse => jump_instruction(),
+        | OpCode::SetLocal => (byte_instruction(), 2),
+        OpCode::JumpIfFalse
+        | OpCode::Jump => (jump_instruction(1), 3),
+        OpCode::Loop => (jump_instruction(-1), 3),
         
         // OpCode::ConstantLong => {
         //     let constant = chunk.read_constant_long_iter(ip).unwrap();
         //     (format!("{} {}", op_code.name(), constant), 4)
         // }
-    }
+    };
+    (format!("{:<15}{}", op_code.name(), text), bytes)
 }

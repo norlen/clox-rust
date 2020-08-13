@@ -78,7 +78,6 @@ impl<'vm> Execuction<'vm> {
     
     fn print_debug(&self) {
         let r = debug::disassemble_instruction(&self.chunk, &self.vm.string_cache, self.ip - 1);
-        println!("\n[Instruction]\t{:04}\t{}", self.ip-1, r.0);
         if self.vm.stack.len() > 0 {
             let mut stack_str = Vec::new();
             for val in self.vm.stack.iter() {
@@ -92,8 +91,11 @@ impl<'vm> Execuction<'vm> {
                 stack_str.push(ss);
             }
             let stack = stack_str.iter().fold(String::new(), |acc, s| acc + s);
-            println!("[STACK]\t\t{}", stack.trim_start());
+            println!("\n[STACK]\t\t{}", stack.trim_start());
+        } else {
+            println!("\n[STACK]");
         }
+        println!("[Instruction]\t{:04}\t{}", self.ip-1, r.0);
     }
 
     fn run(&mut self) -> Result<()> {
@@ -289,7 +291,7 @@ impl<'vm> Execuction<'vm> {
                 OpCode::SetLocal => {
                     let index = self.next_instruction()?;
                     let value = self.vm.stack.last().ok_or(VMError::RuntimeError)?.clone();
-                    self.vm.stack.insert(index as usize, value);
+                    self.vm.stack[index as usize] = value;
                 }
                 OpCode::JumpIfFalse => {
                     let offset = self.next_instruction_as_jump()?;
@@ -299,24 +301,30 @@ impl<'vm> Execuction<'vm> {
                         _ => panic!(),
                     };
                     if !condition_value {
-                        self.ip = (self.ip as i64 + offset) as usize;
+                        self.ip += offset;
                     }
+                }
+                OpCode::Jump => {
+                    let offset = self.next_instruction_as_jump()?;
+                    self.ip += offset;
+                }
+                OpCode::Loop => {
+                    let offset = self.next_instruction_as_jump()?;
+                    self.ip -= offset;
                 }
             }
         }
         Ok(())
     }
 
-    // fn peek_constant(&mut self) -> 
-
     fn next_instruction_as_constant(&mut self) -> Result<&Value> {
         let index = self.next_instruction()?;
         self.chunk.constants.get(index as usize).ok_or(VMError::RuntimeError)
     }
 
-    fn next_instruction_as_jump(&mut self) -> Result<i64> {
-        let b0 = self.next_instruction()? as i64;
-        let b1 = self.next_instruction()? as i64;
+    fn next_instruction_as_jump(&mut self) -> Result<usize> {
+        let b0 = self.next_instruction()? as usize;
+        let b1 = self.next_instruction()? as usize;
         Ok(b0 << 8 | b1)
     }
 
@@ -363,36 +371,31 @@ mod tests {
     #[test]
     fn vm_math0() {
         let source = "(-1 + 2) * 3 - -4;";
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
     fn vm_math1() {
         let source = "!(5 - 4 > 3 * 2 == !nil);";
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
     fn vm_string0() {
         let source = "\"st\" + \"ri\" + \"ng\";";
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
     fn vm_string_interning() {
         let source = "\"hello\" + \"hello\" + \"hello\";";
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
     fn vm_print() {
         let source = "print 3 + (4 * 3) * (1 + (2 + 3));";
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
@@ -402,15 +405,13 @@ mod tests {
         var breakfast = "beignets with " + beverage;
         print breakfast;
         "#;
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
     fn vm_locals_simple() {
         let source = "{ var a = 2; }";
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
@@ -426,8 +427,7 @@ mod tests {
             c = a + b;
         }
         "#;
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
@@ -446,8 +446,7 @@ mod tests {
             }
         }
         "#;
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
     }
 
     #[test]
@@ -464,7 +463,67 @@ mod tests {
         print a;
         print b;
         "#;
-        let mut vm = VM::new();
-        assert!(vm.interpret(source).is_ok());
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_if_else_statement() {
+        let source = r#"
+        var a = 1;
+        var b = 1;
+        if (a == 1) {
+            a = 10;
+        } else {
+            a = 20;
+        }
+        if (b == 2) {
+            b = 100;
+        } else {
+            b = 200;
+        }
+        print a; // expect: 10
+        print b; // expect: 200
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_and_or() {
+        let source = r#"
+        var a = true and false; // false
+        var b = true or false;  // true
+        var c = a and b;        // false
+        var d = a or b;         // true
+        print "should be false";
+        print a;
+        print "should be true";
+        print b;
+        print "should be false";
+        print c;
+        print "should be true";
+        print d;
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_while() {
+        let source = r#"
+        var a = 0;
+        while (a < 10) {
+            a = a + 1;
+        }
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_for() {
+        let source = r#"
+        for (var i = 0; i < 10; i = i + 1) {
+            print i;
+        }
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
     }
 }
