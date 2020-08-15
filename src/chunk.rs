@@ -2,7 +2,7 @@ use crate::instruction::*;
 use crate::rle::RLE;
 use crate::value::Value;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Chunk {
     pub code: Vec<u8>,
     pub constants: Vec<Value>,

@@ -2,7 +2,7 @@ use crate::compiler::{CompileError, Compiler};
 use crate::debug;
 use crate::instruction::OpCode;
 use crate::string_cache::StringCache;
-use crate::value::{Value, Function};
+use crate::value::{Value, Function, NativeFunction};
 use thiserror::Error;
 use std::collections::HashMap;
 
@@ -30,10 +30,21 @@ pub struct VM {
 
 impl VM {
     pub fn new() -> Self {
-        VM {
+        let mut vm = VM {
             string_cache: StringCache::new(),
             globals: HashMap::new(),
-        }
+        };
+
+        vm.define_native("clock".to_owned(), native_clock);
+
+        vm
+    }
+
+    fn define_native(&mut self, name: String, native_fun: NativeFunction) {
+        // TODO: @GC
+        let _name = self.string_cache.cache(name.clone());
+        let native_fun = Value::Native(native_fun);
+        self.globals.insert(name, native_fun);
     }
 
     pub fn interpret(&mut self, source: &str) -> Result<()> {
@@ -64,7 +75,7 @@ impl VM {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct CallFrame {
     function: Function,
     ip: usize,
@@ -106,7 +117,6 @@ impl CallFrame {
 
 struct Execuction<'vm> {
     vm: &'vm mut VM,
-    trace_execution: bool,
     stack: Vec<Value>,
     call_frames: Vec<CallFrame>,
 }
@@ -115,7 +125,6 @@ impl<'vm> Execuction<'vm> {
     fn new<'t>(vm: &'vm mut VM, function: Function) -> Self {
         Self {
             vm,
-            trace_execution: true,
             stack: vec![Value::Function(function.clone())],
             call_frames: vec![CallFrame::new(function, 0)],
         }
@@ -128,7 +137,7 @@ impl<'vm> Execuction<'vm> {
             let instruction = frame.next_instruction()?;
             let instruction = OpCode::from(instruction);
 
-            if self.trace_execution {
+            if cfg!(debug) {
                 let r = debug::disassemble_instruction(&frame.function.chunk, &self.vm.string_cache, frame.ip - 1);
                 if self.stack.len() > 0 {
                     let mut stack_str = Vec::new();
@@ -340,8 +349,6 @@ impl<'vm> Execuction<'vm> {
                 }
                 OpCode::GetLocal => {
                     let index = frame.next_instruction()? as usize + frame.stack_base;
-                    println!("index: {} | stack_base: {}", index, frame.stack_base);
-                    // println!("call frames: {:?}", self.call_frames);
                     let value = self.stack.get(index).ok_or(VMError::RuntimeError)?.clone();
                     self.stack.push(value);
                 }
@@ -388,6 +395,14 @@ impl<'vm> Execuction<'vm> {
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
         match fun {
             Value::Function(fun) => self.call(fun, arg_count),
+            Value::Native(fun) => {
+                let s = self.stack.len() - arg_count - 1;
+                let e = self.stack.len();
+                let result = fun(arg_count, &self.stack[s..e]);
+                self.stack.truncate(s);
+                self.stack.push(result);
+                Ok(())
+            }
             _ => Err(VMError::RuntimeError),
         }
     }
@@ -407,6 +422,11 @@ impl<'vm> Execuction<'vm> {
 
         Ok(())
     }
+}
+
+fn native_clock(_arg_count: usize, _args: &[Value]) -> Value {
+    let time_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    Value::Number(time_now.as_millis() as f64 / 1000f64)
 }
 
 #[cfg(test)]
@@ -619,18 +639,13 @@ mod tests {
     fn vm_fibonacci_rec() {
         let source = r#"
             fun fib(n) {
-                if (n < 0) {
-                    return 0;
-                }
-                if (n == 1) {
-                    return 1;
-                }
-                var a = fib(n-2);
-                var b = fib(n-1);
-                return a + b;
+                if (n < 2) return n;
+                return fib(n - 2) + fib(n - 1);
             }
-            var a = fib(7);
-            print a;
+            
+            var start = clock();
+            print fib(7);
+            print clock() - start;
         "#;
         assert!(VM::new().interpret(source).is_ok());
     }
@@ -638,7 +653,6 @@ mod tests {
     #[test]
     fn vm_fibonacci_iter() {
         let source = r#"
-            // Does not really support n below 1.
             fun fib(n) {
                 if (n < 1) {
                     return 0;
@@ -652,8 +666,9 @@ mod tests {
                 }
                 return b;
             }
-            var a = fib(20);
-            print a;
+            var start = clock();
+            print fib(20);
+            print clock() - start;
         "#;
         assert!(VM::new().interpret(source).is_ok());
     }

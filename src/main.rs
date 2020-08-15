@@ -19,8 +19,14 @@ mod value;
 mod vm;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let file_path = std::env::args().nth(1);
+
     let mut vm = vm::VM::new();
-    repl(&mut vm)
+    if let Some(file_path) = file_path {
+        run_file(&mut vm, Path::new(&file_path))
+    } else {
+        repl(&mut vm)
+    }
 }
 
 fn repl(vm: &mut vm::VM) -> Result<(), Box<dyn Error>> {

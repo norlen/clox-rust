@@ -1,16 +1,19 @@
 use crate::chunk;
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Value {
     Bool(bool),
     Nil,
     Number(f64),
     String(usize),
     Function(Function),
+    Native(NativeFunction),
 }
 
-#[derive(Debug, Clone)]
+pub type NativeFunction = fn(usize, &[Value]) -> Value;
+
+#[derive(Clone)]
 pub struct Function {
     pub name: String,
     pub arity: i64,
@@ -42,7 +45,8 @@ impl fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Number(v) => write!(f, "{}", v),
             Value::String(ref v) => write!(f, "{}", v),
-            Value::Function(ref v) => write!(f, "fn {}", v.name),
+            Value::Function(ref v) => write!(f, "<fn {}>", v.name),
+            Value::Native(_) => write!(f, "<native fn>"),
         }
     }
 }
