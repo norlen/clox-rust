@@ -1,6 +1,6 @@
 use std::cmp::PartialEq;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RLE<T: PartialEq> {
     data: Vec<(T, usize)>,
 }

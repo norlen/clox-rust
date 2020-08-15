@@ -28,6 +28,7 @@ pub enum OpCode {
     JumpIfFalse,
     Jump,
     Loop,
+    Call,
 }
 
 impl Into<u8> for OpCode {
@@ -76,6 +77,7 @@ impl OpCode {
             OpCode::JumpIfFalse => "JumpIfFalse",
             OpCode::Jump => "Jump",
             OpCode::Loop => "Loop",
+            OpCode::Call => "Call",
         }
     }
 }

@@ -1,9 +1,8 @@
-use crate::chunk::Chunk;
 use crate::compiler::{CompileError, Compiler};
 use crate::debug;
 use crate::instruction::OpCode;
 use crate::string_cache::StringCache;
-use crate::value::Value;
+use crate::value::{Value, Function};
 use thiserror::Error;
 use std::collections::HashMap;
 
@@ -25,7 +24,6 @@ pub enum VMError {
 }
 
 pub struct VM {
-    stack: Vec<Value>,
     string_cache: StringCache,
     globals: HashMap<String, Value>,
 }
@@ -33,7 +31,6 @@ pub struct VM {
 impl VM {
     pub fn new() -> Self {
         VM {
-            stack: Vec::new(),
             string_cache: StringCache::new(),
             globals: HashMap::new(),
         }
@@ -41,103 +38,161 @@ impl VM {
 
     pub fn interpret(&mut self, source: &str) -> Result<()> {
         let compiler = Compiler::new(source, &mut self.string_cache);
-        let chunk = compiler.compile()?;
-        self.interpret_chunk(chunk)
+        let func = compiler.compile()?;
+        self.interpret_function(func).unwrap();
+        Ok(())
     }
 
-    pub fn interpret_chunk(&mut self, chunk: Chunk) -> Result<()> {
-        let mut executor = Execuction::new(self, chunk);
-        executor.run()
+    pub fn interpret_function(&mut self, func: Function) -> Result<()> {
+        let mut executor = Execuction::new(self, func);
+        if let Err(err) = executor.run() {
+            // Stack trace.
+            for frame in executor.call_frames.iter().rev() {
+                let name = if frame.function.name == "".to_owned() {
+                    "script"
+                } else {
+                    frame.function.name.as_str()
+                };
+
+                let instruction = frame.ip - 1;
+                let line = frame.function.chunk.lines.get(instruction).copied().unwrap_or(1337);
+                println!("[line {}] in {}", line, name);
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
-
-struct Execuction<'vm> {
-    vm: &'vm mut VM,
-    chunk: Chunk,
+#[derive(Debug, Clone)]
+struct CallFrame {
+    function: Function,
     ip: usize,
-    trace_execution: bool,
+    stack_base: usize,
 }
 
-impl<'vm> Execuction<'vm> {
-    fn new(vm: &'vm mut VM, chunk: Chunk) -> Self {
-        Self { vm, chunk, ip: 0, trace_execution: true }
+impl CallFrame {
+    fn new(function: Function, stack_base: usize) -> Self {
+        Self {
+            function,
+            ip: 0,
+            stack_base,
+        }
     }
 
     fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.chunk.code.get(self.ip - 1).copied().ok_or(VMError::RuntimeError)
+        self.function.chunk.code.get(self.ip - 1).copied().ok_or(VMError::RuntimeError)
     }
 
     fn peek_instruction(&mut self, offset: i64) -> Result<u8> {
-        let index = self.chunk.code.len() as i64 - offset;
-        assert!(self.chunk.code.len() < std::i64::MAX as usize);
+        let index = self.function.chunk.code.len() as i64 - offset;
+        assert!(self.function.chunk.code.len() < std::i64::MAX as usize);
         assert!(index > 0);
-        self.chunk.code.get(index as usize).copied().ok_or(VMError::RuntimeError)
+        self.function.chunk.code.get(index as usize).copied().ok_or(VMError::RuntimeError)
     }
-    
-    fn print_debug(&self) {
-        let r = debug::disassemble_instruction(&self.chunk, &self.vm.string_cache, self.ip - 1);
-        if self.vm.stack.len() > 0 {
-            let mut stack_str = Vec::new();
-            for val in self.vm.stack.iter() {
-                let ss = match val {
-                    Value::String(index) => {
-                        let cached = self.vm.string_cache.get(*index).unwrap();
-                        format!(" [{}]", cached)
-                    },
-                    _ => format!(" [{}]", val),
-                };
-                stack_str.push(ss);
-            }
-            let stack = stack_str.iter().fold(String::new(), |acc, s| acc + s);
-            println!("\n[STACK]\t\t{}", stack.trim_start());
-        } else {
-            println!("\n[STACK]");
+
+    fn next_instruction_as_constant(&mut self) -> Result<&Value> {
+        let index = self.next_instruction()?;
+        self.function.chunk.constants.get(index as usize).ok_or(VMError::RuntimeError)
+    }
+
+    fn next_instruction_as_jump(&mut self) -> Result<usize> {
+        let b0 = self.next_instruction()? as usize;
+        let b1 = self.next_instruction()? as usize;
+        Ok(b0 << 8 | b1)
+    }
+}
+
+struct Execuction<'vm> {
+    vm: &'vm mut VM,
+    trace_execution: bool,
+    stack: Vec<Value>,
+    call_frames: Vec<CallFrame>,
+}
+
+impl<'vm> Execuction<'vm> {
+    fn new<'t>(vm: &'vm mut VM, function: Function) -> Self {
+        Self {
+            vm,
+            trace_execution: true,
+            stack: vec![Value::Function(function.clone())],
+            call_frames: vec![CallFrame::new(function, 0)],
         }
-        println!("[Instruction]\t{:04}\t{}", self.ip-1, r.0);
     }
 
     fn run(&mut self) -> Result<()> {
-        while self.ip < self.chunk.code.len() {
-            let instruction = self.next_instruction()?;
+        let mut frame = self.call_frames.pop().ok_or(VMError::RuntimeError)?;
+
+        while frame.ip < frame.function.chunk.code.len() {
+            let instruction = frame.next_instruction()?;
             let instruction = OpCode::from(instruction);
 
             if self.trace_execution {
-                self.print_debug();
+                let r = debug::disassemble_instruction(&frame.function.chunk, &self.vm.string_cache, frame.ip - 1);
+                if self.stack.len() > 0 {
+                    let mut stack_str = Vec::new();
+                    for val in self.stack.iter() {
+                        let ss = match val {
+                            Value::String(index) => {
+                                let cached = self.vm.string_cache.get(*index).unwrap();
+                                format!(" [{}]", cached)
+                            },
+                            _ => format!(" [{}]", val),
+                        };
+                        stack_str.push(ss);
+                    }
+                    let stack = stack_str.iter().fold(String::new(), |acc, s| acc + s);
+                    println!("\n[STACK]\t\t{}", stack.trim_start());
+                } else {
+                    println!("\n[STACK]");
+                }
+                println!("[Instruction]\t{:04}\t{}", frame.ip-1, r.0);
             }
 
             match instruction {
-                OpCode::Return => break,
+                OpCode::Return => {
+                    let result = self.stack.pop().ok_or(VMError::RuntimeError)?;
+
+                    if self.call_frames.len() == 0 {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+
+                    self.stack.truncate(frame.stack_base);
+                    frame = self.call_frames.pop().unwrap();
+
+                    self.stack.push(result);
+                },
                 OpCode::Constant => {
-                    let constant = self.next_instruction_as_constant()?;
+                    let constant = frame.next_instruction_as_constant()?;
                     let constant = constant.clone();
-                    self.vm.stack.push(constant);
+                    self.stack.push(constant);
                 }
                 // OpCode::ConstantLong => {}
                 OpCode::Nil => {
-                    self.vm.stack.push(Value::Nil);
+                    self.stack.push(Value::Nil);
                 }
                 OpCode::True => {
-                    self.vm.stack.push(Value::Bool(true));
+                    self.stack.push(Value::Bool(true));
                 }
                 OpCode::False => {
-                    self.vm.stack.push(Value::Bool(false));
+                    self.stack.push(Value::Bool(false));
                 }
                 OpCode::Equal => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     let result = Value::equals(lhs, rhs).ok_or_else(|| {
                         VMError::TypeError("cannot compare these values".to_owned())
                     })?;
-                    self.vm.stack.push(Value::Bool(result));
+                    self.stack.push(Value::Bool(result));
                 }
                 OpCode::Greater => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.vm.stack.push(Value::Bool(lhs > rhs))
+                            self.stack.push(Value::Bool(lhs > rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -145,11 +200,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Less => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.vm.stack.push(Value::Bool(lhs < rhs))
+                            self.stack.push(Value::Bool(lhs < rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -157,19 +212,19 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Not => {
-                    let value = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     let value = match value {
                         Value::Bool(value) => Ok(!value),
                         Value::Nil => Ok(true),
                         _ => Err(VMError::TypeError("expected a nil or bool".to_owned())),
                     }?;
-                    self.vm.stack.push(Value::Bool(value));
+                    self.stack.push(Value::Bool(value));
                 }
                 OpCode::Negate => {
-                    let value = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match value {
                         Value::Number(v) => {
-                            self.vm.stack.push(Value::Number(-v));
+                            self.stack.push(Value::Number(-v));
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -177,18 +232,18 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Add => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.vm.stack.push(Value::Number(lhs + rhs))
+                            self.stack.push(Value::Number(lhs + rhs))
                         }
                         (Value::String(lhs), Value::String(rhs)) => {
                             let lhs = self.vm.string_cache.get(lhs).ok_or(VMError::RuntimeError)?;
                             let rhs = self.vm.string_cache.get(rhs).ok_or(VMError::RuntimeError)?;
                             let new = lhs.to_owned() + rhs;
                             let new = self.vm.string_cache.cache(new);
-                            self.vm.stack.push(Value::String(new));
+                            self.stack.push(Value::String(new));
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -196,11 +251,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Subtract => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.vm.stack.push(Value::Number(lhs - rhs))
+                            self.stack.push(Value::Number(lhs - rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -208,11 +263,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Multiply => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.vm.stack.push(Value::Number(lhs * rhs))
+                            self.stack.push(Value::Number(lhs * rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -220,11 +275,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Divide => {
-                    let rhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.vm.stack.push(Value::Number(lhs / rhs))
+                            self.stack.push(Value::Number(lhs / rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -232,7 +287,7 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Print => {
-                    let value = self.vm.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
                     match value {
                         Value::String(index) => {
                             let cached = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
@@ -243,38 +298,38 @@ impl<'vm> Execuction<'vm> {
                 }
                 OpCode::Pop => {
                     // We don't care about the value here, used in expression statements.
-                    self.vm.stack.pop();
+                    self.stack.pop();
                 },
                 OpCode::DefineGlobal => {
-                    let next_instruction = self.next_instruction_as_constant()?;
+                    let next_instruction = frame.next_instruction_as_constant()?;
                     match next_instruction.clone() {
                         Value::String(index) => {
                             let constant_identifier = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
-                            let value = self.vm.stack.get(self.vm.stack.len()-1).ok_or(VMError::RuntimeError)?;
+                            let value = self.stack.get(self.stack.len()-1).ok_or(VMError::RuntimeError)?;
                             self.vm.globals.insert(constant_identifier.to_owned(), value.clone());
-                            self.vm.stack.pop();
+                            self.stack.pop();
                         }
                         _ => panic!(),
                     }
                 }
                 OpCode::GetGlobal => {
-                    let next_instruction = self.next_instruction_as_constant()?;
+                    let next_instruction = frame.next_instruction_as_constant()?;
                     match next_instruction.clone() {
                         Value::String(index) => {
                             let constant_identifier = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
                             let value = self.vm.globals.get(constant_identifier).ok_or(VMError::RuntimeError)?;
-                            self.vm.stack.push(value.clone());
+                            self.stack.push(value.clone());
                         },
                         _ => panic!(),
                     }
                 }
                 OpCode::SetGlobal => {
-                    let next_instruction = self.next_instruction_as_constant()?;
+                    let next_instruction = frame.next_instruction_as_constant()?;
                     match next_instruction.clone() {
                         Value::String(index) => {
                             let constant_identifer = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
                             if self.vm.globals.contains_key(constant_identifer) {
-                                let value = self.vm.stack.last().ok_or(VMError::RuntimeError)?;
+                                let value = self.stack.last().ok_or(VMError::RuntimeError)?;
                                 self.vm.globals.insert(constant_identifer.to_owned(), value.clone());
                             } else {
                                 return Err(VMError::UndefinedVariable(constant_identifer.to_owned()));
@@ -284,57 +339,74 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::GetLocal => {
-                    let index = self.next_instruction()?;
-                    let value = self.vm.stack.get(index as usize).ok_or(VMError::RuntimeError)?.clone();
-                    self.vm.stack.push(value);
+                    let index = frame.next_instruction()? as usize + frame.stack_base;
+                    println!("index: {} | stack_base: {}", index, frame.stack_base);
+                    // println!("call frames: {:?}", self.call_frames);
+                    let value = self.stack.get(index).ok_or(VMError::RuntimeError)?.clone();
+                    self.stack.push(value);
                 }
                 OpCode::SetLocal => {
-                    let index = self.next_instruction()?;
-                    let value = self.vm.stack.last().ok_or(VMError::RuntimeError)?.clone();
-                    self.vm.stack[index as usize] = value;
+                    let index = frame.next_instruction()?;
+                    let value = self.stack.last().ok_or(VMError::RuntimeError)?.clone();
+                    self.stack[index as usize + frame.stack_base] = value;
                 }
                 OpCode::JumpIfFalse => {
-                    let offset = self.next_instruction_as_jump()?;
-                    let condition_value = match self.vm.stack.last().ok_or(VMError::RuntimeError)? {
+                    let offset = frame.next_instruction_as_jump()?;
+                    let condition_value = match self.stack.last().ok_or(VMError::RuntimeError)? {
                         Value::Nil => false,
                         Value::Bool(val) => *val,
                         _ => panic!(),
                     };
                     if !condition_value {
-                        self.ip += offset;
+                        frame.ip += offset;
                     }
                 }
                 OpCode::Jump => {
-                    let offset = self.next_instruction_as_jump()?;
-                    self.ip += offset;
+                    let offset = frame.next_instruction_as_jump()?;
+                    frame.ip += offset;
                 }
                 OpCode::Loop => {
-                    let offset = self.next_instruction_as_jump()?;
-                    self.ip -= offset;
+                    let offset = frame.next_instruction_as_jump()?;
+                    frame.ip -= offset;
+                }
+                OpCode::Call => {
+                    let arg_count = frame.next_instruction()? as usize;
+                    let fun_index = self.stack.len() - arg_count - 1;
+                    self.call_frames.push(frame);
+
+                    let fun = self.stack.get(fun_index).ok_or(VMError::RuntimeError)?;
+                    let fun = fun.clone();
+
+                    self.call_value(fun, arg_count)?;
+                    frame = self.call_frames.pop().unwrap();
                 }
             }
         }
         Ok(())
     }
 
-    fn next_instruction_as_constant(&mut self) -> Result<&Value> {
-        let index = self.next_instruction()?;
-        self.chunk.constants.get(index as usize).ok_or(VMError::RuntimeError)
+    fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
+        match fun {
+            Value::Function(fun) => self.call(fun, arg_count),
+            _ => Err(VMError::RuntimeError),
+        }
     }
+    
+    fn call(&mut self, fun: Function, arg_count: usize) -> Result<()> {
+        if arg_count != fun.arity as usize {
+            panic!("Expected {} arguments but got {}", fun.arity, arg_count);
+        }
 
-    fn next_instruction_as_jump(&mut self) -> Result<usize> {
-        let b0 = self.next_instruction()? as usize;
-        let b1 = self.next_instruction()? as usize;
-        Ok(b0 << 8 | b1)
+        let call_frame = CallFrame::new(fun, self.stack.len() - arg_count - 1);
+        self.call_frames.push(call_frame);
+
+        if self.call_frames.len() > 255 {
+            // We should have some limit at least.
+            panic!("Stack overflow");
+        }
+
+        Ok(())
     }
-
-    // fn next_instruction_as_constant_long(&mut self) -> Result<&Value> {
-    //     let b2 = self.next_instruction()?;
-    //     let b1 = self.next_instruction()?;
-    //     let b0 = self.next_instruction()?;
-    //     let index = chunk::combine_index(b2, b1, b0);
-    //     self.chunk.constants.get(index)
-    // }
 }
 
 #[cfg(test)]
@@ -345,6 +417,7 @@ mod tests {
     fn vm_raw_instructions() {
         use crate::instruction;
         use crate::value::Value;
+        use crate::chunk::Chunk;
 
         let add_constant = |chunk: &mut Chunk, value| {
             let index = chunk.add_constant(Value::Number(value));
@@ -358,14 +431,20 @@ mod tests {
         add_constant(&mut chunk, 5.6);
         chunk.write(instruction::OpCode::Divide, 0);
         chunk.write(instruction::OpCode::Negate, 0);
-        // chunk.add_constant_long(Value::Number(2.5), 0);
+        add_constant(&mut chunk, 2.5);
         chunk.write(instruction::OpCode::Return, 0);
 
         let cache = StringCache::new();
         debug::disassemble_chunk(&chunk, &cache, "test chunk");
 
+        let fun = Function {
+            arity: 0,
+            name: "".to_owned(),
+            chunk,
+        };
+
         let mut vm = VM::new();
-        assert!(vm.interpret_chunk(chunk).is_ok());
+        assert!(vm.interpret_function(fun).is_ok());
     }
 
     #[test]
@@ -523,6 +602,58 @@ mod tests {
         for (var i = 0; i < 10; i = i + 1) {
             print i;
         }
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_fun_simple() {
+        let source = r#"
+        fun hello() {}
+        fun hello2(a) {}
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_fibonacci_rec() {
+        let source = r#"
+            fun fib(n) {
+                if (n < 0) {
+                    return 0;
+                }
+                if (n == 1) {
+                    return 1;
+                }
+                var a = fib(n-2);
+                var b = fib(n-1);
+                return a + b;
+            }
+            var a = fib(7);
+            print a;
+        "#;
+        assert!(VM::new().interpret(source).is_ok());
+    }
+
+    #[test]
+    fn vm_fibonacci_iter() {
+        let source = r#"
+            // Does not really support n below 1.
+            fun fib(n) {
+                if (n < 1) {
+                    return 0;
+                }
+                var a = 0;
+                var b = 1;
+                for (var i = 0; i < n-1; i = i + 1) {
+                    var c = b;
+                    b = a + b;
+                    a = c;
+                }
+                return b;
+            }
+            var a = fib(20);
+            print a;
         "#;
         assert!(VM::new().interpret(source).is_ok());
     }

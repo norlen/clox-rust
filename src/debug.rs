@@ -74,7 +74,8 @@ pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usiz
         | OpCode::GetGlobal
         | OpCode::SetGlobal => (constant_instruction(), 2),
         | OpCode::GetLocal
-        | OpCode::SetLocal => (byte_instruction(), 2),
+        | OpCode::SetLocal
+        | OpCode::Call => (byte_instruction(), 2),
         OpCode::JumpIfFalse
         | OpCode::Jump => (jump_instruction(1), 3),
         OpCode::Loop => (jump_instruction(-1), 3),

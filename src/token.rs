@@ -11,6 +11,14 @@ impl<'a> Token<'a> {
     pub fn new(kind: TokenKind, data: &'a str, line: u64) -> Self {
         Self { kind, data, line }
     }
+
+    pub fn new_empty() -> Self {
+        Self {
+            kind: TokenKind::EOF,
+            data: "",
+            line: 0,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
