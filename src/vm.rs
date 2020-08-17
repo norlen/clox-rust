@@ -1,12 +1,13 @@
-use thiserror::Error;
 use colored::*;
+use thiserror::Error;
 
-use crate::compiler::{CompileError};
+use crate::compiler::CompileError;
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::instruction::OpCode;
-use crate::value::*;
 use crate::gc::GC;
+use crate::instruction::OpCode;
+use crate::object::Allocated;
 use crate::object::Object;
+use crate::value::*;
 
 pub type Result<T> = std::result::Result<T, VMError>;
 
@@ -43,19 +44,33 @@ impl CallFrame {
 
     fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.function.chunk.code.get(self.ip - 1).copied().ok_or(VMError::RuntimeError)
+        self.function
+            .chunk
+            .code
+            .get(self.ip - 1)
+            .copied()
+            .ok_or(VMError::RuntimeError)
     }
 
     fn peek_instruction(&mut self, offset: i64) -> Result<u8> {
         let index = self.function.chunk.code.len() as i64 - offset;
         assert!(self.function.chunk.code.len() < std::i64::MAX as usize);
         assert!(index > 0);
-        self.function.chunk.code.get(index as usize).copied().ok_or(VMError::RuntimeError)
+        self.function
+            .chunk
+            .code
+            .get(index as usize)
+            .copied()
+            .ok_or(VMError::RuntimeError)
     }
 
     fn next_instruction_as_constant(&mut self) -> Result<&Value> {
         let index = self.next_instruction()?;
-        self.function.chunk.constants.get(index as usize).ok_or(VMError::RuntimeError)
+        self.function
+            .chunk
+            .constants
+            .get(index as usize)
+            .ok_or(VMError::RuntimeError)
     }
 
     fn next_instruction_as_jump(&mut self) -> Result<usize> {
@@ -71,9 +86,7 @@ pub struct VM<'gc> {
 
 impl<'gc> VM<'gc> {
     pub fn new(gc: &'gc mut GC) -> Self {
-        let mut vm = Self {
-            gc,
-        };
+        let mut vm = Self { gc };
 
         vm.define_native("clock".to_owned(), native_clock);
         vm
@@ -82,14 +95,22 @@ impl<'gc> VM<'gc> {
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
         let tracked_func = self.gc.track_function(func.clone());
         self.gc.stack.push(Value::Object(tracked_func));
-        self.gc.call_frames.push(CallFrame::new(func, self.gc.stack.len() - 1));
+        self.gc
+            .call_frames
+            .push(CallFrame::new(func, self.gc.stack.len() - 1));
 
         if let Err(err) = self.run() {
             // Stack trace.
             for frame in self.gc.call_frames.iter().rev() {
                 let name = frame.function.function_name();
                 let instruction = frame.ip - 1;
-                let line = frame.function.chunk.lines.get(instruction).copied().unwrap_or(0);
+                let line = frame
+                    .function
+                    .chunk
+                    .lines
+                    .get(instruction)
+                    .copied()
+                    .unwrap_or(0);
                 println!("[line {}] in {}", line, name);
             }
             return Err(err);
@@ -125,9 +146,7 @@ impl<'gc> VM<'gc> {
                         let mut stack_str = Vec::new();
                         for val in self.gc.stack.iter() {
                             let ss = match val {
-                                Value::Object(object) => {
-                                    format!(" [{}]", object.get().data)
-                                }
+                                Value::Object(object) => format!(" [{}]", object.get().data),
                                 _ => format!(" [{}]", val),
                             };
                             stack_str.push(ss);
@@ -139,24 +158,14 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 if TRACE_EXECUTION_INSTR {
-                    println!("{}\t{:04}\t{}", "[Instruction]".green(), frame.ip-1, r.0);
+                    println!("{}\t{:04}\t{}", "[Instruction]".green(), frame.ip - 1, r.0);
                 }
             }
 
             match instruction {
                 OpCode::Return => {
-                    let result = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-
-                    if self.gc.call_frames.len() == 0 {
-                        self.gc.stack.pop();
-                        return Ok(());
-                    }
-
-                    self.gc.stack.truncate(frame.stack_base);
-                    frame = self.gc.call_frames.pop().unwrap();
-
-                    self.gc.stack.push(result);
-                },
+                    self.op_return(&mut frame)?;
+                }
                 OpCode::Constant => {
                     let constant = frame.next_instruction_as_constant()?;
                     let constant = constant.clone();
@@ -236,7 +245,7 @@ impl<'gc> VM<'gc> {
                                     let new = lhs.clone() + rhs;
                                     let new = self.gc.track_string(new);
                                     self.gc.stack.push(Value::Object(new));
-                                },
+                                }
                                 _ => todo!(),
                             }
                         }
@@ -246,106 +255,46 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::Subtract => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    match (lhs, rhs) {
-                        (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.gc.stack.push(Value::Number(lhs - rhs))
-                        }
-                        _ => {
-                            return Err(VMError::TypeError("operand must be a number.".to_owned()))
-                        }
-                    }
+                    self.op_binary(|lhs, rhs| lhs - rhs)?;
                 }
                 OpCode::Multiply => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    match (lhs, rhs) {
-                        (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.gc.stack.push(Value::Number(lhs * rhs))
-                        }
-                        _ => {
-                            return Err(VMError::TypeError("operand must be a number.".to_owned()))
-                        }
-                    }
+                    self.op_binary(|lhs, rhs| lhs * rhs)?;
                 }
                 OpCode::Divide => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    match (lhs, rhs) {
-                        (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.gc.stack.push(Value::Number(lhs / rhs))
-                        }
-                        _ => {
-                            return Err(VMError::TypeError("operand must be a number.".to_owned()))
-                        }
-                    }
+                    self.op_binary(|lhs, rhs| lhs / rhs)?;
                 }
                 OpCode::Print => {
                     let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match &value {
-                        Value::Object(object) => {
-                            match &object.get().data {
-                                Object::String(object) => println!("{}", object),
-                                _ => panic!("trying to print rnadom objects"),
-                            }
-                        }
+                        Value::Object(object) => match &object.get().data {
+                            Object::String(object) => println!("{}", object),
+                            _ => panic!("trying to print rnadom objects"),
+                        },
                         _ => println!("{}", value),
                     };
                 }
                 OpCode::Pop => {
                     // We don't care about the value here, used in expression statements.
                     self.gc.stack.pop();
-                },
-                OpCode::DefineGlobal => {
-                    let next_instruction = frame.next_instruction_as_constant()?;
-                    match &next_instruction.clone() {
-                        Value::Object(object) => {
-                            match &object.get().data {
-                                Object::String(object) => {
-                                    let value = self.gc.stack.get(self.gc.stack.len()-1).ok_or(VMError::RuntimeError)?;
-                                    self.gc.globals.insert(object.clone(), value.clone());
-                                    self.gc.stack.pop();
-                                },
-                                _ => panic!(),
-                            }
-                        }
-                        _ => panic!(),
-                    }
                 }
+                OpCode::DefineGlobal => {
+                    self.op_define_global(&mut frame)?;
+                }
+
                 OpCode::GetGlobal => {
-                    let next_instruction = frame.next_instruction_as_constant()?;
-                    match &next_instruction.clone() {
-                        Value::Object(object) => {
-                            match &object.get().data {
-                                Object::String(object) => {
-                                    let value = self.gc.globals.get(object).unwrap();
-                                    self.gc.stack.push(value.clone());
-                                },
-                                _ => panic!(),
-                            }
-                        }
-                        _ => panic!(),
-                    }
+                    self.op_get_global(&mut frame).unwrap();
                 }
                 OpCode::SetGlobal => {
-                    let next_instruction = frame.next_instruction_as_constant()?;
-                    match &next_instruction.clone() {
-                        Value::Object(object) => {
-                            match &object.get().data {
-                                Object::String(object) => {
-                                    let value = self.gc.stack.last().unwrap();
-                                    self.gc.globals.insert(object.clone(), value.clone());
-                                },
-                                _ => panic!(),
-                            }
-                        }
-                        _ => panic!(),
-                    }
+                    self.op_set_global(&mut frame).unwrap();
                 }
                 OpCode::GetLocal => {
                     let index = frame.next_instruction()? as usize + frame.stack_base;
-                    let value = self.gc.stack.get(index).ok_or(VMError::RuntimeError)?.clone();
+                    let value = self
+                        .gc
+                        .stack
+                        .get(index)
+                        .ok_or(VMError::RuntimeError)?
+                        .clone();
                     self.gc.stack.push(value);
                 }
                 OpCode::SetLocal => {
@@ -388,27 +337,98 @@ impl<'gc> VM<'gc> {
         Ok(())
     }
 
+    fn op_binary(&mut self, op: fn(f64, f64) -> f64) -> Result<()> {
+        let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+        let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+        match (lhs, rhs) {
+            (Value::Number(lhs), Value::Number(rhs)) => {
+                self.gc.stack.push(Value::Number(op(lhs, rhs)))
+            }
+            _ => return Err(VMError::TypeError("operand must be a number.".to_owned())),
+        }
+        Ok(())
+    }
+
+    fn op_return(&mut self, frame: &mut CallFrame) -> Result<()> {
+        let result = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+
+        if self.gc.call_frames.len() == 0 {
+            self.gc.stack.pop();
+            return Ok(());
+        }
+
+        self.gc.stack.truncate(frame.stack_base);
+        *frame = self.gc.call_frames.pop().unwrap();
+
+        self.gc.stack.push(result);
+        Ok(())
+    }
+
+    fn op_define_global(&mut self, frame: &mut CallFrame) -> Result<()> {
+        let next_instruction = frame.next_instruction_as_constant()?;
+        let string = self.get_string_object(next_instruction)?;
+        let value = self
+            .gc
+            .stack
+            .get(self.gc.stack.len() - 1)
+            .ok_or(VMError::RuntimeError)?;
+        self.gc.globals.insert(string.clone(), value.clone());
+        self.gc.stack.pop();
+        Ok(())
+    }
+
+    fn op_get_global(&mut self, frame: &mut CallFrame) -> Result<()> {
+        let next_instruction = frame.next_instruction_as_constant()?;
+        let string = self.get_string_object(next_instruction)?;
+        let value = self.gc.globals.get(string).unwrap();
+        self.gc.stack.push(value.clone());
+        Ok(())
+    }
+
+    fn op_set_global(&mut self, frame: &mut CallFrame) -> Result<()> {
+        let next_instruction = frame.next_instruction_as_constant()?;
+        let string = self.get_string_object(next_instruction)?;
+        let value = self.gc.stack.last().unwrap();
+        self.gc.globals.insert(string.clone(), value.clone());
+        Ok(())
+    }
+
+    fn get_object<'a>(&self, value: &'a Value) -> Result<&'a Allocated<Object>> {
+        match value {
+            Value::Object(object) => Ok(object),
+            _ => panic!("expected object"),
+        }
+    }
+
+    fn get_string_object<'a>(&self, value: &'a Value) -> Result<&'a String> {
+        match value {
+            Value::Object(object) => match &object.get().data {
+                Object::String(string) => return Ok(string),
+                _ => panic!("expected string object for global variable"),
+            },
+            _ => panic!("expected object"),
+        }
+    }
+
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
         match &fun {
-            Value::Object(object) => {
-                match &object.get().data {
-                    Object::Function(fun) => self.call(&fun, arg_count),
-                    Object::Native(native_fn) => {
-                        let s = self.gc.stack.len() - arg_count - 1;
-                        let e = self.gc.stack.len();
-                        let native_fn = native_fn.fun;
-                        let result = native_fn(arg_count, &self.gc.stack[s..e]);
-                        self.gc.stack.truncate(s);
-                        self.gc.stack.push(result);
-                        Ok(())
-                    },
-                    _ => panic!(),
+            Value::Object(object) => match &object.get().data {
+                Object::Function(fun) => self.call(&fun, arg_count),
+                Object::Native(native_fn) => {
+                    let s = self.gc.stack.len() - arg_count - 1;
+                    let e = self.gc.stack.len();
+                    let native_fn = native_fn.fun;
+                    let result = native_fn(arg_count, &self.gc.stack[s..e]);
+                    self.gc.stack.truncate(s);
+                    self.gc.stack.push(result);
+                    Ok(())
                 }
-            }
+                _ => panic!(),
+            },
             _ => Err(VMError::RuntimeError),
         }
     }
-    
+
     fn call(&mut self, fun: &Function, arg_count: usize) -> Result<()> {
         if arg_count != fun.arity as usize {
             panic!("Expected {} arguments but got {}", fun.arity, arg_count);
@@ -427,7 +447,9 @@ impl<'gc> VM<'gc> {
 }
 
 fn native_clock(_arg_count: usize, _args: &[Value]) -> Value {
-    let time_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let time_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
     Value::Number(time_now.as_millis() as f64 / 1000f64)
 }
 
@@ -452,9 +474,9 @@ mod tests {
 
     #[test]
     fn vm_raw_instructions() {
+        use crate::chunk::Chunk;
         use crate::instruction;
         use crate::value::Value;
-        use crate::chunk::Chunk;
 
         let add_constant = |chunk: &mut Chunk, value| {
             let index = chunk.add_constant(Value::Number(value));
@@ -474,7 +496,6 @@ mod tests {
         let mut fun = Function::blank();
         fun.chunk = chunk;
 
-        
         let mut gc = GC::new();
         let mut vm = VM::new(&mut gc);
         assert!(vm.interpret_function(fun).is_ok());
@@ -700,6 +721,38 @@ mod tests {
             var d = b + " world";
             print d;
         }
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_closure0() {
+        let source = r#"
+            var x = "global";
+            fun outer() {
+                var x = "outer";
+                fun inner() {
+                    print x;
+                }
+                inner();
+            }
+            outer();
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_closure1() {
+        let source = r#"
+            fun makeClosure() {
+                var local = "local";
+                fun closure() {
+                    print local;
+                }
+                return closure;
+            }
+            var closure = makeClosure();
+            closure();
         "#;
         assert!(run(source).is_ok());
     }

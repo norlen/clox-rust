@@ -1101,4 +1101,36 @@ mod tests {
         "#;
         assert!(compile(source).is_ok());
     }
+
+    #[test]
+    fn compile_closure0() {
+        let source = r#"
+            var x = "global";
+            fun outer() {
+                var x = "outer";
+                fun inner() {
+                    print x;
+                }
+                inner();
+            }
+            outer();
+        "#;
+        assert!(compile(source).is_ok());
+    }
+
+    #[test]
+    fn compile_closure1() {
+        let source = r#"
+            fun makeClosure() {
+                var local = "local";
+                fun closure() {
+                    print local;
+                }
+                return closure;
+            }
+            var closure = makeClosure();
+            closure();
+        "#;
+        assert!(compile(source).is_ok());
+    }
 }

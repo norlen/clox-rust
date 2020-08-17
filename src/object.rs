@@ -35,6 +35,14 @@ impl<T: Debug> Allocated<T> {
     }
 }
 
+impl<T: Debug> std::ops::Deref for Allocated<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.get().data
+    }
+}
+
 impl<T: Debug> Allocated<T> {
     pub fn get(&self) -> &Traced<T> {
         // Yep!

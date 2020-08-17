@@ -9,7 +9,7 @@ pub const TRACE_EXECUTION_STACK: bool = true;
 pub const TRACE_EXECUTION_INSTR: bool = true;
 
 // Set to true to trigger the GC when adding any new object.
-pub const STRESS_GC: bool = true;
+pub const STRESS_GC: bool = false;
 
 // Set to true to log the allocations and sweeping in the GC.
 pub const LOG_GC: bool = true;
@@ -87,11 +87,6 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         OpCode::JumpIfFalse
         | OpCode::Jump => (jump_instruction(1), 3),
         OpCode::Loop => (jump_instruction(-1), 3),
-        
-        // OpCode::ConstantLong => {
-        //     let constant = chunk.read_constant_long_iter(ip).unwrap();
-        //     (format!("{} {}", op_code.name(), constant), 4)
-        // }
     };
     (format!("{:<15}{}", op_code.name(), text), bytes)
 }
