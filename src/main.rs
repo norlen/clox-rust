@@ -17,29 +17,46 @@ mod token;
 mod util;
 mod value;
 mod vm;
+mod gc;
+mod object;
+
+use compiler::Compiler;
+use vm::VM;
+use gc::GC;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let file_path = std::env::args().nth(1);
 
-    let mut vm = vm::VM::new();
+    let mut gc = GC::new();
     if let Some(file_path) = file_path {
-        run_file(&mut vm, Path::new(&file_path))
+        run_file(Path::new(&file_path), &mut gc)
     } else {
-        repl(&mut vm)
+        repl(&mut gc)
     }
 }
 
-fn repl(vm: &mut vm::VM) -> Result<(), Box<dyn Error>> {
+fn repl(gc: &mut GC) -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
-        vm.interpret(&line?)?;
+        interpret(&line?, gc)?;
     }
     Ok(())
 }
 
-fn run_file(vm: &mut vm::VM, path: &Path) -> Result<(), Box<dyn Error>> {
+fn run_file(path: &Path, gc: &mut GC) -> Result<(), Box<dyn Error>> {
     let contents = fs::read_to_string(path)?;
-    vm.interpret(&contents)?;
+    interpret(&contents, gc)
+}
+
+fn interpret(source: &str, gc: &mut GC) -> Result<(), Box<dyn Error>> {
+
+    let function = {
+        let compiler = Compiler::new(source, gc);
+        compiler.compile()?
+    };
+
+    let mut vm = VM::new(gc);
+    vm.interpret_function(function)?;
 
     Ok(())
 }

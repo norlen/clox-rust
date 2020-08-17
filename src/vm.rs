@@ -1,10 +1,12 @@
-use crate::compiler::{CompileError, Compiler};
-use crate::debug;
-use crate::instruction::OpCode;
-use crate::string_cache::StringCache;
-use crate::value::{Value, Function, NativeFunction};
 use thiserror::Error;
-use std::collections::HashMap;
+use colored::*;
+
+use crate::compiler::{CompileError};
+use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
+use crate::instruction::OpCode;
+use crate::value::*;
+use crate::gc::GC;
+use crate::object::Object;
 
 pub type Result<T> = std::result::Result<T, VMError>;
 
@@ -23,60 +25,8 @@ pub enum VMError {
     UndefinedVariable(String),
 }
 
-pub struct VM {
-    string_cache: StringCache,
-    globals: HashMap<String, Value>,
-}
-
-impl VM {
-    pub fn new() -> Self {
-        let mut vm = VM {
-            string_cache: StringCache::new(),
-            globals: HashMap::new(),
-        };
-
-        vm.define_native("clock".to_owned(), native_clock);
-
-        vm
-    }
-
-    fn define_native(&mut self, name: String, native_fun: NativeFunction) {
-        // TODO: @GC
-        let _name = self.string_cache.cache(name.clone());
-        let native_fun = Value::Native(native_fun);
-        self.globals.insert(name, native_fun);
-    }
-
-    pub fn interpret(&mut self, source: &str) -> Result<()> {
-        let compiler = Compiler::new(source, &mut self.string_cache);
-        let func = compiler.compile()?;
-        self.interpret_function(func).unwrap();
-        Ok(())
-    }
-
-    pub fn interpret_function(&mut self, func: Function) -> Result<()> {
-        let mut executor = Execuction::new(self, func);
-        if let Err(err) = executor.run() {
-            // Stack trace.
-            for frame in executor.call_frames.iter().rev() {
-                let name = if frame.function.name == "".to_owned() {
-                    "script"
-                } else {
-                    frame.function.name.as_str()
-                };
-
-                let instruction = frame.ip - 1;
-                let line = frame.function.chunk.lines.get(instruction).copied().unwrap_or(1337);
-                println!("[line {}] in {}", line, name);
-            }
-            return Err(err);
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone)]
-struct CallFrame {
+pub struct CallFrame {
     function: Function,
     ip: usize,
     stack_base: usize,
@@ -115,93 +65,126 @@ impl CallFrame {
     }
 }
 
-struct Execuction<'vm> {
-    vm: &'vm mut VM,
-    stack: Vec<Value>,
-    call_frames: Vec<CallFrame>,
+pub struct VM<'gc> {
+    gc: &'gc mut GC,
 }
 
-impl<'vm> Execuction<'vm> {
-    fn new<'t>(vm: &'vm mut VM, function: Function) -> Self {
-        Self {
-            vm,
-            stack: vec![Value::Function(function.clone())],
-            call_frames: vec![CallFrame::new(function, 0)],
+impl<'gc> VM<'gc> {
+    pub fn new(gc: &'gc mut GC) -> Self {
+        let mut vm = Self {
+            gc,
+        };
+
+        vm.define_native("clock".to_owned(), native_clock);
+        vm
+    }
+
+    pub fn interpret_function(&mut self, func: Function) -> Result<()> {
+        let tracked_func = self.gc.track_function(func.clone());
+        self.gc.stack.push(Value::Object(tracked_func));
+        self.gc.call_frames.push(CallFrame::new(func, self.gc.stack.len() - 1));
+
+        if let Err(err) = self.run() {
+            // Stack trace.
+            for frame in self.gc.call_frames.iter().rev() {
+                let name = frame.function.function_name();
+                let instruction = frame.ip - 1;
+                let line = frame.function.chunk.lines.get(instruction).copied().unwrap_or(0);
+                println!("[line {}] in {}", line, name);
+            }
+            return Err(err);
         }
+        Ok(())
+    }
+
+    fn define_native(&mut self, name: String, native_fun: NativeFunction) {
+        let name_obj = self.gc.track_string(name.clone());
+        self.gc.stack.push(Value::Object(name_obj.clone())); // Make it reachable.
+
+        let native_fn = self.gc.track_native(NativeFn::new(name_obj, native_fun));
+        self.gc.stack.push(Value::Object(native_fn.clone())); // Make this reachable as well.
+
+        self.gc.globals.insert(name, Value::Object(native_fn));
+
+        // They are in the globals table now and does not need to be reachable from the stack.
+        self.gc.stack.pop();
+        self.gc.stack.pop();
     }
 
     fn run(&mut self) -> Result<()> {
-        let mut frame = self.call_frames.pop().ok_or(VMError::RuntimeError)?;
+        let mut frame = self.gc.call_frames.pop().ok_or(VMError::RuntimeError)?;
 
         while frame.ip < frame.function.chunk.code.len() {
             let instruction = frame.next_instruction()?;
             let instruction = OpCode::from(instruction);
 
-            if cfg!(debug) {
-                let r = debug::disassemble_instruction(&frame.function.chunk, &self.vm.string_cache, frame.ip - 1);
-                if self.stack.len() > 0 {
-                    let mut stack_str = Vec::new();
-                    for val in self.stack.iter() {
-                        let ss = match val {
-                            Value::String(index) => {
-                                let cached = self.vm.string_cache.get(*index).unwrap();
-                                format!(" [{}]", cached)
-                            },
-                            _ => format!(" [{}]", val),
-                        };
-                        stack_str.push(ss);
+            if TRACE_EXECUTION_STACK || TRACE_EXECUTION_INSTR {
+                let r = debug::disassemble_instruction(&frame.function.chunk, frame.ip - 1);
+                if TRACE_EXECUTION_STACK {
+                    if self.gc.stack.len() > 0 {
+                        let mut stack_str = Vec::new();
+                        for val in self.gc.stack.iter() {
+                            let ss = match val {
+                                Value::Object(object) => {
+                                    format!(" [{}]", object.get().data)
+                                }
+                                _ => format!(" [{}]", val),
+                            };
+                            stack_str.push(ss);
+                        }
+                        let stack = stack_str.iter().fold(String::new(), |acc, s| acc + s);
+                        println!("\n{}\t\t{}", "[STACK]".yellow(), stack.trim_start());
+                    } else {
+                        println!("\n{}", "[STACK]".yellow());
                     }
-                    let stack = stack_str.iter().fold(String::new(), |acc, s| acc + s);
-                    println!("\n[STACK]\t\t{}", stack.trim_start());
-                } else {
-                    println!("\n[STACK]");
                 }
-                println!("[Instruction]\t{:04}\t{}", frame.ip-1, r.0);
+                if TRACE_EXECUTION_INSTR {
+                    println!("{}\t{:04}\t{}", "[Instruction]".green(), frame.ip-1, r.0);
+                }
             }
 
             match instruction {
                 OpCode::Return => {
-                    let result = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let result = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
 
-                    if self.call_frames.len() == 0 {
-                        self.stack.pop();
+                    if self.gc.call_frames.len() == 0 {
+                        self.gc.stack.pop();
                         return Ok(());
                     }
 
-                    self.stack.truncate(frame.stack_base);
-                    frame = self.call_frames.pop().unwrap();
+                    self.gc.stack.truncate(frame.stack_base);
+                    frame = self.gc.call_frames.pop().unwrap();
 
-                    self.stack.push(result);
+                    self.gc.stack.push(result);
                 },
                 OpCode::Constant => {
                     let constant = frame.next_instruction_as_constant()?;
                     let constant = constant.clone();
-                    self.stack.push(constant);
+                    self.gc.stack.push(constant);
                 }
-                // OpCode::ConstantLong => {}
                 OpCode::Nil => {
-                    self.stack.push(Value::Nil);
+                    self.gc.stack.push(Value::Nil);
                 }
                 OpCode::True => {
-                    self.stack.push(Value::Bool(true));
+                    self.gc.stack.push(Value::Bool(true));
                 }
                 OpCode::False => {
-                    self.stack.push(Value::Bool(false));
+                    self.gc.stack.push(Value::Bool(false));
                 }
                 OpCode::Equal => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     let result = Value::equals(lhs, rhs).ok_or_else(|| {
                         VMError::TypeError("cannot compare these values".to_owned())
                     })?;
-                    self.stack.push(Value::Bool(result));
+                    self.gc.stack.push(Value::Bool(result));
                 }
                 OpCode::Greater => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Bool(lhs > rhs))
+                            self.gc.stack.push(Value::Bool(lhs > rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -209,11 +192,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Less => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Bool(lhs < rhs))
+                            self.gc.stack.push(Value::Bool(lhs < rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -221,19 +204,19 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Not => {
-                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     let value = match value {
                         Value::Bool(value) => Ok(!value),
                         Value::Nil => Ok(true),
                         _ => Err(VMError::TypeError("expected a nil or bool".to_owned())),
                     }?;
-                    self.stack.push(Value::Bool(value));
+                    self.gc.stack.push(Value::Bool(value));
                 }
                 OpCode::Negate => {
-                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match value {
                         Value::Number(v) => {
-                            self.stack.push(Value::Number(-v));
+                            self.gc.stack.push(Value::Number(-v));
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -241,18 +224,21 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Add => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    match (lhs, rhs) {
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    match (&lhs, &rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Number(lhs + rhs))
+                            self.gc.stack.push(Value::Number(lhs + rhs))
                         }
-                        (Value::String(lhs), Value::String(rhs)) => {
-                            let lhs = self.vm.string_cache.get(lhs).ok_or(VMError::RuntimeError)?;
-                            let rhs = self.vm.string_cache.get(rhs).ok_or(VMError::RuntimeError)?;
-                            let new = lhs.to_owned() + rhs;
-                            let new = self.vm.string_cache.cache(new);
-                            self.stack.push(Value::String(new));
+                        (Value::Object(lhs), Value::Object(rhs)) => {
+                            match (&lhs.get().data, &rhs.get().data) {
+                                (Object::String(lhs), Object::String(rhs)) => {
+                                    let new = lhs.clone() + rhs;
+                                    let new = self.gc.track_string(new);
+                                    self.gc.stack.push(Value::Object(new));
+                                },
+                                _ => todo!(),
+                            }
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -260,11 +246,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Subtract => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Number(lhs - rhs))
+                            self.gc.stack.push(Value::Number(lhs - rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -272,11 +258,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Multiply => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Number(lhs * rhs))
+                            self.gc.stack.push(Value::Number(lhs * rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -284,11 +270,11 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Divide => {
-                    let rhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Number(lhs / rhs))
+                            self.gc.stack.push(Value::Number(lhs / rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -296,70 +282,80 @@ impl<'vm> Execuction<'vm> {
                     }
                 }
                 OpCode::Print => {
-                    let value = self.stack.pop().ok_or(VMError::RuntimeError)?;
-                    match value {
-                        Value::String(index) => {
-                            let cached = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
-                            println!("{}", cached);
-                        },
+                    let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    match &value {
+                        Value::Object(object) => {
+                            match &object.get().data {
+                                Object::String(object) => println!("{}", object),
+                                _ => panic!("trying to print rnadom objects"),
+                            }
+                        }
                         _ => println!("{}", value),
                     };
                 }
                 OpCode::Pop => {
                     // We don't care about the value here, used in expression statements.
-                    self.stack.pop();
+                    self.gc.stack.pop();
                 },
                 OpCode::DefineGlobal => {
                     let next_instruction = frame.next_instruction_as_constant()?;
-                    match next_instruction.clone() {
-                        Value::String(index) => {
-                            let constant_identifier = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
-                            let value = self.stack.get(self.stack.len()-1).ok_or(VMError::RuntimeError)?;
-                            self.vm.globals.insert(constant_identifier.to_owned(), value.clone());
-                            self.stack.pop();
+                    match &next_instruction.clone() {
+                        Value::Object(object) => {
+                            match &object.get().data {
+                                Object::String(object) => {
+                                    let value = self.gc.stack.get(self.gc.stack.len()-1).ok_or(VMError::RuntimeError)?;
+                                    self.gc.globals.insert(object.clone(), value.clone());
+                                    self.gc.stack.pop();
+                                },
+                                _ => panic!(),
+                            }
                         }
                         _ => panic!(),
                     }
                 }
                 OpCode::GetGlobal => {
                     let next_instruction = frame.next_instruction_as_constant()?;
-                    match next_instruction.clone() {
-                        Value::String(index) => {
-                            let constant_identifier = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
-                            let value = self.vm.globals.get(constant_identifier).ok_or(VMError::RuntimeError)?;
-                            self.stack.push(value.clone());
-                        },
+                    match &next_instruction.clone() {
+                        Value::Object(object) => {
+                            match &object.get().data {
+                                Object::String(object) => {
+                                    let value = self.gc.globals.get(object).unwrap();
+                                    self.gc.stack.push(value.clone());
+                                },
+                                _ => panic!(),
+                            }
+                        }
                         _ => panic!(),
                     }
                 }
                 OpCode::SetGlobal => {
                     let next_instruction = frame.next_instruction_as_constant()?;
-                    match next_instruction.clone() {
-                        Value::String(index) => {
-                            let constant_identifer = self.vm.string_cache.get(index).ok_or(VMError::RuntimeError)?;
-                            if self.vm.globals.contains_key(constant_identifer) {
-                                let value = self.stack.last().ok_or(VMError::RuntimeError)?;
-                                self.vm.globals.insert(constant_identifer.to_owned(), value.clone());
-                            } else {
-                                return Err(VMError::UndefinedVariable(constant_identifer.to_owned()));
+                    match &next_instruction.clone() {
+                        Value::Object(object) => {
+                            match &object.get().data {
+                                Object::String(object) => {
+                                    let value = self.gc.stack.last().unwrap();
+                                    self.gc.globals.insert(object.clone(), value.clone());
+                                },
+                                _ => panic!(),
                             }
-                        },
+                        }
                         _ => panic!(),
                     }
                 }
                 OpCode::GetLocal => {
                     let index = frame.next_instruction()? as usize + frame.stack_base;
-                    let value = self.stack.get(index).ok_or(VMError::RuntimeError)?.clone();
-                    self.stack.push(value);
+                    let value = self.gc.stack.get(index).ok_or(VMError::RuntimeError)?.clone();
+                    self.gc.stack.push(value);
                 }
                 OpCode::SetLocal => {
                     let index = frame.next_instruction()?;
-                    let value = self.stack.last().ok_or(VMError::RuntimeError)?.clone();
-                    self.stack[index as usize + frame.stack_base] = value;
+                    let value = self.gc.stack.last().ok_or(VMError::RuntimeError)?.clone();
+                    self.gc.stack[index as usize + frame.stack_base] = value;
                 }
                 OpCode::JumpIfFalse => {
                     let offset = frame.next_instruction_as_jump()?;
-                    let condition_value = match self.stack.last().ok_or(VMError::RuntimeError)? {
+                    let condition_value = match self.gc.stack.last().ok_or(VMError::RuntimeError)? {
                         Value::Nil => false,
                         Value::Bool(val) => *val,
                         _ => panic!(),
@@ -378,14 +374,14 @@ impl<'vm> Execuction<'vm> {
                 }
                 OpCode::Call => {
                     let arg_count = frame.next_instruction()? as usize;
-                    let fun_index = self.stack.len() - arg_count - 1;
-                    self.call_frames.push(frame);
+                    let fun_index = self.gc.stack.len() - arg_count - 1;
+                    self.gc.call_frames.push(frame);
 
-                    let fun = self.stack.get(fun_index).ok_or(VMError::RuntimeError)?;
+                    let fun = self.gc.stack.get(fun_index).ok_or(VMError::RuntimeError)?;
                     let fun = fun.clone();
 
                     self.call_value(fun, arg_count)?;
-                    frame = self.call_frames.pop().unwrap();
+                    frame = self.gc.call_frames.pop().unwrap();
                 }
             }
         }
@@ -393,29 +389,35 @@ impl<'vm> Execuction<'vm> {
     }
 
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
-        match fun {
-            Value::Function(fun) => self.call(fun, arg_count),
-            Value::Native(fun) => {
-                let s = self.stack.len() - arg_count - 1;
-                let e = self.stack.len();
-                let result = fun(arg_count, &self.stack[s..e]);
-                self.stack.truncate(s);
-                self.stack.push(result);
-                Ok(())
+        match &fun {
+            Value::Object(object) => {
+                match &object.get().data {
+                    Object::Function(fun) => self.call(&fun, arg_count),
+                    Object::Native(native_fn) => {
+                        let s = self.gc.stack.len() - arg_count - 1;
+                        let e = self.gc.stack.len();
+                        let native_fn = native_fn.fun;
+                        let result = native_fn(arg_count, &self.gc.stack[s..e]);
+                        self.gc.stack.truncate(s);
+                        self.gc.stack.push(result);
+                        Ok(())
+                    },
+                    _ => panic!(),
+                }
             }
             _ => Err(VMError::RuntimeError),
         }
     }
     
-    fn call(&mut self, fun: Function, arg_count: usize) -> Result<()> {
+    fn call(&mut self, fun: &Function, arg_count: usize) -> Result<()> {
         if arg_count != fun.arity as usize {
             panic!("Expected {} arguments but got {}", fun.arity, arg_count);
         }
 
-        let call_frame = CallFrame::new(fun, self.stack.len() - arg_count - 1);
-        self.call_frames.push(call_frame);
+        let call_frame = CallFrame::new(fun.clone(), self.gc.stack.len() - arg_count - 1);
+        self.gc.call_frames.push(call_frame);
 
-        if self.call_frames.len() > 255 {
+        if self.gc.call_frames.len() > 255 {
             // We should have some limit at least.
             panic!("Stack overflow");
         }
@@ -432,6 +434,21 @@ fn native_clock(_arg_count: usize, _args: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(source: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::compiler::Compiler;
+
+        let mut gc = GC::new();
+
+        let function = {
+            let compiler = Compiler::new(source, &mut gc);
+            compiler.compile()?
+        };
+
+        let mut vm = VM::new(&mut gc);
+        vm.interpret_function(function)?;
+        Ok(())
+    }
 
     #[test]
     fn vm_raw_instructions() {
@@ -454,47 +471,43 @@ mod tests {
         add_constant(&mut chunk, 2.5);
         chunk.write(instruction::OpCode::Return, 0);
 
-        let cache = StringCache::new();
-        debug::disassemble_chunk(&chunk, &cache, "test chunk");
+        let mut fun = Function::blank();
+        fun.chunk = chunk;
 
-        let fun = Function {
-            arity: 0,
-            name: "".to_owned(),
-            chunk,
-        };
-
-        let mut vm = VM::new();
+        
+        let mut gc = GC::new();
+        let mut vm = VM::new(&mut gc);
         assert!(vm.interpret_function(fun).is_ok());
     }
 
     #[test]
     fn vm_math0() {
         let source = "(-1 + 2) * 3 - -4;";
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
     fn vm_math1() {
         let source = "!(5 - 4 > 3 * 2 == !nil);";
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
     fn vm_string0() {
         let source = "\"st\" + \"ri\" + \"ng\";";
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
     fn vm_string_interning() {
         let source = "\"hello\" + \"hello\" + \"hello\";";
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
     fn vm_print() {
         let source = "print 3 + (4 * 3) * (1 + (2 + 3));";
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -504,13 +517,13 @@ mod tests {
         var breakfast = "beignets with " + beverage;
         print breakfast;
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
     fn vm_locals_simple() {
         let source = "{ var a = 2; }";
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -526,7 +539,7 @@ mod tests {
             c = a + b;
         }
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -545,7 +558,7 @@ mod tests {
             }
         }
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -562,7 +575,7 @@ mod tests {
         print a;
         print b;
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -583,7 +596,7 @@ mod tests {
         print a; // expect: 10
         print b; // expect: 200
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -602,7 +615,7 @@ mod tests {
         print "should be true";
         print d;
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -613,7 +626,7 @@ mod tests {
             a = a + 1;
         }
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -623,7 +636,7 @@ mod tests {
             print i;
         }
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -632,7 +645,7 @@ mod tests {
         fun hello() {}
         fun hello2(a) {}
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -647,7 +660,7 @@ mod tests {
             print fib(7);
             print clock() - start;
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
     }
 
     #[test]
@@ -670,6 +683,24 @@ mod tests {
             print fib(20);
             print clock() - start;
         "#;
-        assert!(VM::new().interpret(source).is_ok());
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_gc0() {
+        let source = r#"
+        var a = 0;
+        var b = "hello world";
+        {
+            var c = b + "!";
+            print c;
+        }
+        b = "goodbye";
+        {
+            var d = b + " world";
+            print d;
+        }
+        "#;
+        assert!(run(source).is_ok());
     }
 }

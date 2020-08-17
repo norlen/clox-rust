@@ -55,7 +55,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    pub fn scan_token(&mut self) -> Result<Token<'a>, ScannerError> {
+    pub fn scan_token(&mut self) -> Result<Token, ScannerError> {
         self.skip_whitespace();
         self.start = self.cursor.index;
 
@@ -98,12 +98,12 @@ impl<'a> Scanner<'a> {
         return false;
     }
 
-    fn create_token(&self, kind: TokenKind) -> Token<'a> {
-        let data = &self.source[self.start..self.cursor.index];
+    fn create_token(&self, kind: TokenKind) -> Token {
+        let data = self.source[self.start..self.cursor.index].to_owned();
         Token::new(kind, data, self.line)
     }
 
-    fn create_token_match(&mut self, matches: char, if_matches: TokenKind, otherwise: TokenKind) -> Token<'a> {
+    fn create_token_match(&mut self, matches: char, if_matches: TokenKind, otherwise: TokenKind) -> Token {
         if self.match_token(matches) {
             self.create_token(if_matches)
         } else {
@@ -143,7 +143,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn create_identifier_token(&mut self) -> Token<'a> {
+    fn create_identifier_token(&mut self) -> Token {
         self.cursor
             .advance_when(|ch| ch.is_alphanumeric() || ch == '_');
 
@@ -155,7 +155,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn create_digit_token(&mut self) -> Token<'a> {
+    fn create_digit_token(&mut self) -> Token {
         let check_digit = |ch: char| ch.is_digit(10);
 
         self.cursor.advance_when(check_digit);
@@ -175,7 +175,7 @@ impl<'a> Scanner<'a> {
         self.create_token(TokenKind::Number)
     }
 
-    fn create_string_token(&mut self) -> Result<Token<'a>, ScannerError> {
+    fn create_string_token(&mut self) -> Result<Token, ScannerError> {
         loop {
             if let Some(ch) = self.cursor.peek() {
                 if ch == '\n' {

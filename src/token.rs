@@ -1,21 +1,21 @@
 use std::fmt;
 
-#[derive(Debug, Copy, Clone)]
-pub struct Token<'a> {
+#[derive(Debug, Clone)]
+pub struct Token {
     pub kind: TokenKind,
     pub line: u64,
-    pub data: &'a str,
+    pub data: String,
 }
 
-impl<'a> Token<'a> {
-    pub fn new(kind: TokenKind, data: &'a str, line: u64) -> Self {
+impl Token {
+    pub fn new(kind: TokenKind, data: String, line: u64) -> Self {
         Self { kind, data, line }
     }
 
     pub fn new_empty() -> Self {
         Self {
             kind: TokenKind::EOF,
-            data: "",
+            data: String::new(),
             line: 0,
         }
     }

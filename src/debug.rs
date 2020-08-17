@@ -1,9 +1,20 @@
 use crate::chunk::Chunk;
 use crate::instruction::OpCode;
 use crate::value::Value;
-use crate::string_cache::StringCache;
 
-pub fn disassemble_chunk(chunk: &Chunk, strings: &StringCache, name: &str) {
+// Set to true if the stack should be shown on each instruction.
+pub const TRACE_EXECUTION_STACK: bool = true;
+
+// Set to true if each instruction executed should be shown.
+pub const TRACE_EXECUTION_INSTR: bool = true;
+
+// Set to true to trigger the GC when adding any new object.
+pub const STRESS_GC: bool = true;
+
+// Set to true to log the allocations and sweeping in the GC.
+pub const LOG_GC: bool = true;
+
+pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
     println!("== {} ==", name);
     println!("[CODE] {:?}", chunk.code);
 
@@ -17,7 +28,7 @@ pub fn disassemble_chunk(chunk: &Chunk, strings: &StringCache, name: &str) {
             format!("{:4}", current_line)
         };
 
-        let (text, bytes) = disassemble_instruction(chunk, strings, offset);
+        let (text, bytes) = disassemble_instruction(chunk, offset);
 
         println!("{:04} {} {}", offset, line, text);
 
@@ -26,17 +37,14 @@ pub fn disassemble_chunk(chunk: &Chunk, strings: &StringCache, name: &str) {
     }
 }
 
-pub fn disassemble_instruction(chunk: &Chunk, strings: &StringCache, index: usize) -> (String, usize) {
+pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
     let op_code = chunk.code.get(index).unwrap();
     let op_code = OpCode::from(op_code);
 
     let constant_instruction = || {
         let constant = chunk.read_constant(index).unwrap();
         match constant {
-            Value::String(index) => {
-                let cached = strings.get(*index).unwrap();
-                format!("[index] {}\t[variable] {}", index, cached)
-            },
+            Value::Object(object) => format!("[index] {}\t[variable] {:?}", index, object.get()),
             _ => format!("[value] {}", constant),
         }
     };
