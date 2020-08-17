@@ -39,17 +39,6 @@ impl Chunk {
         index as u8
     }
 
-    pub fn read_constant_iter<'src>(
-        &self,
-        ip: &mut impl Iterator<Item = &'src u8>,
-    ) -> Option<&Value> {
-        if let Some(i) = ip.next() {
-            self.constants.get(*i as usize)
-        } else {
-            None
-        }
-    }
-
     pub fn read_constant(&self, index: usize) -> Option<&Value> {
         if let Some(i) = self.code.get(index + 1) {
             self.constants.get(*i as usize)

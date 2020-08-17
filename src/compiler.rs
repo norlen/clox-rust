@@ -928,22 +928,6 @@ impl Precedence {
             Precedence::Primary => Precedence::Primary,
         }
     }
-
-    fn lower(&self) -> Precedence {
-        match self {
-            Precedence::None => Precedence::None,
-            Precedence::Assignment => Precedence::None,
-            Precedence::Or => Precedence::Assignment,
-            Precedence::And => Precedence::Or,
-            Precedence::Equality => Precedence::And,
-            Precedence::Comparison => Precedence::Equality,
-            Precedence::Term => Precedence::Comparison,
-            Precedence::Factor => Precedence::Term,
-            Precedence::Unary => Precedence::Factor,
-            Precedence::Call => Precedence::Unary,
-            Precedence::Primary => Precedence::Call,
-        }
-    }
 }
 
 struct Parser {

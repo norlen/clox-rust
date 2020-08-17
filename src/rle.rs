@@ -6,10 +6,6 @@ pub struct RLE<T: PartialEq> {
 }
 
 impl<T: PartialEq> RLE<T> {
-    pub fn new() -> Self {
-        Self { data: Vec::new() }
-    }
-
     pub fn push(&mut self, item: T) {
         if let Some(last) = self.data.last_mut() {
             if last.0 == item {

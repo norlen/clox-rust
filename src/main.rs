@@ -12,7 +12,6 @@ mod debug;
 mod instruction;
 mod rle;
 mod scanner;
-mod string_cache;
 mod token;
 mod util;
 mod value;

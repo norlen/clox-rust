@@ -45,16 +45,4 @@ impl<'a> StrCursor<'a> {
             }
         }
     }
-
-    pub fn advance_until<F>(&mut self, f: F)
-    where
-        F: Fn(char) -> bool,
-    {
-        while let Some((_i, ch)) = self.it.peek() {
-            if f(*ch) {
-                break;
-            }
-            self.advance();
-        }
-    }
 }

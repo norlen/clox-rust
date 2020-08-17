@@ -220,11 +220,6 @@ impl GC {
         }
     }
 
-    /// Marks multiple values as reachable, will only have an effect on values which are objects.
-    fn mark_values(&mut self, value_it: impl Iterator<Item = Value>) {
-        value_it.for_each(|v| self.mark_value(v));
-    }
-
     /// Marks objects as reachable, and adds them once to the gray list for further processing.
     fn mark_object(&mut self, mut object: Allocated<Object>) {
         // Using the tri-color abstraction with white, gray and black nodes.
