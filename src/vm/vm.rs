@@ -2,11 +2,11 @@ use colored::*;
 
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::memory::{Allocated, Closure, Function, NativeFn, NativeFunction, Object, Upvalue, GC};
+use crate::memory::{Gc, Closure, Function, NativeFn, NativeFunction, Object, Upvalue, GC};
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
-    open_upvalues: Vec<Allocated<Object>>,
+    open_upvalues: Vec<Gc<Object>>,
 }
 
 impl<'gc> VM<'gc> {
@@ -22,12 +22,12 @@ impl<'gc> VM<'gc> {
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
         let tracked_func = self.gc.track_function(func.clone());
-        self.gc.stack.push(Value::Object(tracked_func.clone()));
+        self.gc.stack.push(tracked_func.clone().into());
         let closure = Closure::new(tracked_func);
         self.gc.stack.pop();
 
         // Put the closure at the beginning of the stack and set up the call frame.
-        let closure = Value::Object(self.gc.track_closure(closure));
+        let closure: Value = self.gc.track_closure(closure).into();
         self.gc.stack.push(closure.clone());
         self.call_value(closure, 0)?;
 
@@ -52,12 +52,12 @@ impl<'gc> VM<'gc> {
 
     fn define_native(&mut self, name: String, native_fun: NativeFunction) {
         let name_obj = self.gc.track_string(name.clone());
-        self.gc.stack.push(Value::Object(name_obj.clone())); // Make it reachable.
+        self.gc.stack.push(name_obj.clone().into()); // Make it reachable.
 
         let native_fn = self.gc.track_native(NativeFn::new(name_obj, native_fun));
-        self.gc.stack.push(Value::Object(native_fn.clone())); // Make this reachable as well.
+        self.gc.stack.push(native_fn.clone().into()); // Make this reachable as well.
 
-        self.gc.globals.insert(name, Value::Object(native_fn));
+        self.gc.globals.insert(name, native_fn.into());
 
         // They are in the globals table now and does not need to be reachable from the stack.
         self.gc.stack.pop();
@@ -186,7 +186,7 @@ impl<'gc> VM<'gc> {
                                 (Object::String(lhs), Object::String(rhs)) => {
                                     let new = lhs.clone() + rhs;
                                     let new = self.gc.track_string(new);
-                                    self.gc.stack.push(Value::Object(new));
+                                    self.gc.stack.push(new.into());
                                 }
                                 _ => todo!(),
                             }
@@ -277,7 +277,7 @@ impl<'gc> VM<'gc> {
                 OpCode::Closure => {
                     let function = frame.next_instruction_as_constant()?.as_object();
                     let mut closure = self.gc.track_closure(Closure::new(function));
-                    self.gc.stack.push(Value::Object(closure.clone()));
+                    self.gc.stack.push(closure.clone().into());
                     let closure = closure.as_closure_mut();
                     for _ in 0..closure.upvalue_count {
                         let is_local = if frame.next_instruction()? == 1 {
@@ -330,7 +330,7 @@ impl<'gc> VM<'gc> {
         Ok(())
     }
 
-    fn capture_upvalue(&mut self, local_index: usize) -> Allocated<Object> {
+    fn capture_upvalue(&mut self, local_index: usize) -> Gc<Object> {
         let upvalue = {
             let local = self.gc.stack.get_mut(local_index).unwrap();
 
@@ -427,7 +427,7 @@ impl<'gc> VM<'gc> {
             );
         }
 
-        // TODO: Do we have to pass the Allocated<Object> to the CallFrame here?
+        // TODO: Do we have to pass the Gc<Object> to the CallFrame here?
         // Or can it figure it that the function is a root anyway?
         let call_frame = CallFrame::new(closure.clone(), self.gc.stack.len() - arg_count - 1);
         self.gc.call_frames.push(call_frame);

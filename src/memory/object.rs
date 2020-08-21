@@ -1,7 +1,7 @@
 use colored::*;
 use std::fmt::{self, Debug};
 
-use super::Allocated;
+use super::{Gc, GC};
 use crate::compiler::chunk::Chunk;
 use crate::debug::LOG_OBJECT;
 use crate::vm::value::Value;
@@ -115,7 +115,7 @@ impl Upvalue {
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub name: Option<Allocated<Object>>,
+    pub name: Option<Gc<Object>>,
     pub arity: i64,
     pub chunk: Chunk,
     pub num_upvalues: usize,
@@ -131,7 +131,7 @@ impl Function {
         }
     }
 
-    pub fn new(name: Allocated<Object>) -> Self {
+    pub fn new(name: Gc<Object>) -> Self {
         Self {
             name: Some(name),
             arity: 0,
@@ -155,13 +155,13 @@ impl Function {
 
 #[derive(Debug, Clone)]
 pub struct Closure {
-    pub function: Allocated<Object>,
-    pub upvalues: Vec<Allocated<Object>>,
+    pub function: Gc<Object>,
+    pub upvalues: Vec<Gc<Object>>,
     pub upvalue_count: usize,
 }
 
 impl Closure {
-    pub fn new(function: Allocated<Object>) -> Self {
+    pub fn new(function: Gc<Object>) -> Self {
         let num_upvalues = function.as_function().num_upvalues;
         Self {
             function: function.clone(),
@@ -174,12 +174,12 @@ impl Closure {
 pub type NativeFunction = fn(usize, &[Value]) -> Value;
 #[derive(Clone)]
 pub struct NativeFn {
-    pub name: Allocated<Object>,
+    pub name: Gc<Object>,
     pub fun: NativeFunction,
 }
 
 impl NativeFn {
-    pub fn new(name: Allocated<Object>, fun: NativeFunction) -> Self {
+    pub fn new(name: Gc<Object>, fun: NativeFunction) -> Self {
         Self { name, fun }
     }
 

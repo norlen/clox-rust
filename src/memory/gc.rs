@@ -2,7 +2,7 @@ use colored::*;
 use std::collections::HashMap;
 
 use super::object::{Closure, Function, NativeFn, Object, Upvalue};
-use super::{Allocated, Traced};
+use super::{Gc, Traced};
 use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
 use crate::vm::{value::Value, CallFrame};
@@ -36,12 +36,12 @@ pub struct GC {
 
     /// The list of all objects that have recently been reached, either by marking roots, or by tracking their references.
     /// The items in this list are then blackened and removed on each collection cycle.
-    gray_list: Vec<Allocated<Object>>,
+    gray_list: Vec<Gc<Object>>,
 
-    /// The total amount of bytes allocated so far.
+    /// The total amount of bytes Gc so far.
     bytes_allocated: usize,
 
-    /// When `bytes_allocated` reaches this amount the GC starts collecting.
+    /// When `bytes_Gc` reaches this amount the GC starts collecting.
     next_gc: usize,
 }
 
@@ -61,47 +61,47 @@ impl GC {
     }
 
     /// Adds a string to the garbage collector.
-    pub fn track_string(&mut self, string: String) -> Allocated<Object> {
+    pub fn track_string(&mut self, string: String) -> Gc<Object> {
         self.on_track(std::mem::size_of::<String>());
         let string = self
             .interned_strings
             .entry(string.clone())
             .or_insert_with(|| Box::new(Traced::new(Object::String(string))));
-        Allocated::new(string)
+        Gc::new(string)
     }
 
     /// Adds a function to the gargbace collector.
-    pub fn track_function(&mut self, function: Function) -> Allocated<Object> {
+    pub fn track_function(&mut self, function: Function) -> Gc<Object> {
         self.on_track(std::mem::size_of::<Function>());
         self.objects
             .push(Box::new(Traced::new(Object::Function(function))));
         let object = self.objects.last_mut().unwrap();
-        Allocated::new(object)
+        Gc::new(object)
     }
 
     /// Adds a native function to the garbage collector.
-    pub fn track_native(&mut self, native_fn: NativeFn) -> Allocated<Object> {
+    pub fn track_native(&mut self, native_fn: NativeFn) -> Gc<Object> {
         self.on_track(std::mem::size_of::<NativeFn>());
         self.objects
             .push(Box::new(Traced::new(Object::Native(native_fn))));
         let object = self.objects.last_mut().unwrap();
-        Allocated::new(object)
+        Gc::new(object)
     }
 
-    pub fn track_closure(&mut self, closure: Closure) -> Allocated<Object> {
+    pub fn track_closure(&mut self, closure: Closure) -> Gc<Object> {
         self.on_track(std::mem::size_of::<Closure>());
         self.objects
             .push(Box::new(Traced::new(Object::Closure(closure))));
         let object = self.objects.last_mut().unwrap();
-        Allocated::new(object)
+        Gc::new(object)
     }
 
-    pub fn track_upvalue(&mut self, upvalue: Upvalue) -> Allocated<Object> {
+    pub fn track_upvalue(&mut self, upvalue: Upvalue) -> Gc<Object> {
         self.on_track(std::mem::size_of::<Upvalue>());
         self.objects
             .push(Box::new(Traced::new(Object::Upvalue(upvalue))));
         let object = self.objects.last_mut().unwrap();
-        Allocated::new(object)
+        Gc::new(object)
     }
 
     fn on_track(&mut self, allocated: usize) {
@@ -154,7 +154,7 @@ impl GC {
         };
 
         // Mark stack.
-        let stack_objects: Vec<Allocated<Object>> =
+        let stack_objects: Vec<Gc<Object>> =
             self.stack.iter().filter_map(filter_objects).collect();
         stack_objects
             .iter()
@@ -176,7 +176,7 @@ impl GC {
         // Mark compiler roots.
         // Since the function being compiled isn't tracked yet by the GC
         // we have to go inside and mark the constantly directly.
-        let compiler_objects: Vec<Allocated<Object>> = self
+        let compiler_objects: Vec<Gc<Object>> = self
             .functions
             .iter()
             .flat_map(|f| f.function.chunk.constants.iter().filter_map(filter_objects))
@@ -266,7 +266,7 @@ impl GC {
     }
 
     /// Marks objects as reachable, and adds them once to the gray list for further processing.
-    fn mark_object(&mut self, mut object: Allocated<Object>) {
+    fn mark_object(&mut self, mut object: Gc<Object>) {
         // Using the tri-color abstraction with white, gray and black nodes.
         // If the node is set to gray, we have that as marked being true. If
         // this gets called again the node is black so we should not add it
@@ -286,13 +286,13 @@ impl GC {
     }
 
     /// Marks multiple objects as reachable.
-    fn mark_objects(&mut self, objects_it: impl Iterator<Item = Allocated<Object>>) {
+    fn mark_objects(&mut self, objects_it: impl Iterator<Item = Gc<Object>>) {
         objects_it.for_each(|o| self.mark_object(o));
     }
 
     /// Finishes the processing of a gray object, will mark other objects that are reachable
     /// by the object.
-    fn blacken(&mut self, object: Allocated<Object>) {
+    fn blacken(&mut self, object: Gc<Object>) {
         if LOG_GC {
             println!(
                 "{}\t\tBlacken: [{:?}] {:?}",

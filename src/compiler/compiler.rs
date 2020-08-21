@@ -6,7 +6,7 @@ use super::{
     token::{Token, TokenKind},
 };
 use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
-use crate::memory::{Allocated, Function, Object, GC};
+use crate::memory::{Gc, Function, Object, GC};
 use crate::vm::{instruction::OpCode, value::Value};
 
 #[derive(Debug, Error)]
@@ -117,7 +117,7 @@ impl FunctionState {
         }
     }
 
-    fn new(name: Allocated<Object>, function_kind: FunctionKind) -> Self {
+    fn new(name: Gc<Object>, function_kind: FunctionKind) -> Self {
         Self {
             function: Function::new(name),
             function_kind,
@@ -451,8 +451,8 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     fn identifier_constant(&mut self, name: String) -> u8 {
         // let cached_string = self.cache.cache(name.to_owned());
-        let cached_string = Value::Object(self.gc.track_string(name));
-        self.add_constant(cached_string)
+        let cached_string = self.gc.track_string(name);
+        self.add_constant(cached_string.into())
     }
 
     fn mark_local_initialized(&mut self) -> Result<()> {
@@ -614,7 +614,7 @@ impl<'s, 'src: 's> Compiler<'src> {
             let name = fun.as_function().function_name();
             debug::disassemble_chunk(&fun.as_function().chunk, name);
         }
-        let index = self.add_constant(Value::Object(fun));
+        let index = self.add_constant(fun.into());
         // self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())?;
         let closure = self.gc.functions.last_mut().unwrap();
         let line = self.parser.line();
@@ -964,7 +964,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         // Skip " at beginning and end.
         let string = src_str[1..src_str.len() - 1].to_owned();
         let string = self.gc.track_string(string);
-        let index = self.add_constant(Value::Object(string));
+        let index = self.add_constant(string.into());
         self.gc.functions.last_mut().unwrap().emit_bytes(
             OpCode::Constant,
             index,

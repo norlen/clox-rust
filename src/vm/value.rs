@@ -1,4 +1,4 @@
-use crate::memory::{Allocated, Closure, Function, NativeFn, Object, Upvalue};
+use crate::memory::{Gc, Closure, Function, NativeFn, Object, Upvalue};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -6,7 +6,13 @@ pub enum Value {
     Nil,
     Bool(bool),
     Number(f64),
-    Object(Allocated<Object>),
+    Object(Gc<Object>),
+}
+
+impl From<Gc<Object>> for Value {
+    fn from(object: Gc<Object>) -> Self {
+        Value::Object(object)
+    }
 }
 
 impl fmt::Display for Value {
@@ -33,11 +39,11 @@ impl Value {
         }
     }
 
-    pub fn as_object(&self) -> Allocated<Object> {
+    pub fn as_object(&self) -> Gc<Object> {
         self.as_object_ref().clone()
     }
 
-    pub fn as_object_ref(&self) -> &Allocated<Object> {
+    pub fn as_object_ref(&self) -> &Gc<Object> {
         match self {
             Value::Object(object) => object,
             _ => panic!("Expected object"),

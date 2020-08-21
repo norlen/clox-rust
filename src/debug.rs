@@ -11,7 +11,7 @@ pub const TRACE_EXECUTION_INSTR: bool = true;
 pub const STRESS_GC: bool = false;
 
 // Set to true to log the allocations and sweeping in the GC.
-pub const LOG_GC: bool = false;
+pub const LOG_GC: bool = true;
 
 pub const LOG_COMPILER: bool = false;
 
