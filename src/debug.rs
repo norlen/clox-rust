@@ -12,7 +12,13 @@ pub const TRACE_EXECUTION_INSTR: bool = true;
 pub const STRESS_GC: bool = false;
 
 // Set to true to log the allocations and sweeping in the GC.
-pub const LOG_GC: bool = true;
+pub const LOG_GC: bool = false;
+
+pub const LOG_COMPILER: bool = false;
+
+pub const LOG_COMPILED_CODE: bool = true;
+
+pub const LOG_OBJECT: bool = false;
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
     println!("== {} ==", name);
@@ -40,11 +46,13 @@ pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
 pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
     let op_code = chunk.code.get(index).unwrap();
     let op_code = OpCode::from(op_code);
+    let mut offset = index + 1;
 
     let constant_instruction = || {
+        let idx = *chunk.code.get(index + 1).unwrap() as usize;
         let constant = chunk.read_constant(index).unwrap();
         match constant {
-            Value::Object(object) => format!("[index] {}\t[variable] {:?}", index, object.get()),
+            Value::Object(object) => format!("[const index] {}\t[variable] {:?}", idx, object.get()),
             _ => format!("[value] {}", constant),
         }
     };
@@ -76,6 +84,7 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         | OpCode::Greater
         | OpCode::Less
         | OpCode::Print
+        | OpCode::CloseUpvalue
         | OpCode::Pop => ("".to_owned(), 1),
         OpCode::Constant
         | OpCode::DefineGlobal
@@ -83,10 +92,36 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         | OpCode::SetGlobal => (constant_instruction(), 2),
         | OpCode::GetLocal
         | OpCode::SetLocal
+        | OpCode::GetUpvalue
+        | OpCode::SetUpvalue
         | OpCode::Call => (byte_instruction(), 2),
         OpCode::JumpIfFalse
         | OpCode::Jump => (jump_instruction(1), 3),
         OpCode::Loop => (jump_instruction(-1), 3),
+        OpCode::Closure => {
+            let constant = *chunk.code.get(offset).unwrap();
+            offset += 1;
+            let constant = chunk.constants.get(constant as usize).unwrap();
+            let function = constant.as_function().unwrap();
+
+            let mut text = match constant {
+                Value::Object(object) => format!("[index] {}\t[variable] {:?}", offset-1, object.get()),
+                _ => format!("[value] {}", constant),
+            };
+
+            for _i in 0..function.num_upvalues {
+                let is_local = chunk.code.get(offset).unwrap();
+                offset += 1;
+                let upvalue_index = chunk.code.get(offset).unwrap();
+                offset += 1;
+
+                let is_local = if *is_local == 1 { "local" } else { "upvalue" };
+                text += format!("\n{:<15}{} {} ", "|", is_local, upvalue_index).as_str();
+            }
+
+            (text, offset - index)
+        }
     };
+
     (format!("{:<15}{}", op_code.name(), text), bytes)
 }

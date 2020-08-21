@@ -1,13 +1,13 @@
 use thiserror::Error;
 use colored::*;
 
-use crate::debug;
+use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
 use crate::instruction::OpCode;
 use crate::scanner::{Scanner, ScannerError};
 use crate::token::{Token, TokenKind};
-use crate::value::{Value, Function};
+use crate::value::Value;
 use crate::gc::GC;
-use crate::object::Object;
+use crate::object::{Object, Function};
 
 #[derive(Debug, Error)]
 pub enum CompileError {
@@ -60,11 +60,26 @@ struct Local {
 
     // The level of nesting for this local, 0 is the global scope and it moves upwards.
     depth: i64,
+
+    // If any closure has captured this upvalue and it needs to be moved to the heap.
+    is_captured: bool,
 }
 
 impl Local {
     fn new(name: Token, depth: i64) -> Self {
-        Self { name, depth }
+        Self { name, depth, is_captured: false }
+    }
+}
+
+#[derive(Debug)]
+struct Upvalue {
+    index: u8,
+    is_local: bool,
+}
+
+impl Upvalue {
+    fn new(index: u8, is_local: bool) -> Self {
+        Self { index, is_local }
     }
 }
 
@@ -89,6 +104,7 @@ pub struct FunctionState {
     function_kind: FunctionKind,
     locals: Vec<Local>,
     scope_depth: i64,
+    upvalues: Vec<Upvalue>,
 }
 
 impl FunctionState {
@@ -99,19 +115,30 @@ impl FunctionState {
             // The current function is always the first local, so we need to add one value here.
             locals: vec![Local::new(Token::new_empty(), -1)],
             scope_depth: 0,
+            upvalues: Vec::new(),
         }
     }
 
+    fn emit_raw(&mut self, byte: u8, line: u64) -> Result<()> {
+        if LOG_COMPILER {
+            println!("{}\t[EMIT]\t\t\t[BYTE]: {}", "[COMPILER]".blue().bold(), byte);
+        }
+        self.function.chunk.write_byte(byte, line);
+        Ok(())
+    }
+
     fn emit_byte(&mut self, op_code: OpCode, line: u64) -> Result<()> {
-        println!("{}\t[EMIT]\t\t\t{}", "[COMPILER]".blue().bold(), op_code);
-        // let line = self.parser.previous()?.line;
+        if LOG_COMPILER {
+            println!("{}\t[EMIT]\t\t\t{}", "[COMPILER]".blue().bold(), op_code);
+        }
         self.function.chunk.write(op_code, line);
         Ok(())
     }
 
     fn emit_bytes(&mut self, op_code: OpCode, index: u8, line: u64) -> Result<()> {
-        println!("{}\t[EMIT]\t\t\t{} -> {}", "[COMPILER]".blue().bold(), op_code, index);
-        // let line = self.parser.previous()?.line;
+        if LOG_COMPILER {
+            println!("{}\t[EMIT]\t\t\t{} -> {}", "[COMPILER]".blue().bold(), op_code, index);
+        }
         self.function.chunk.write_index(op_code, index, line);
         Ok(())
     }
@@ -122,8 +149,9 @@ impl FunctionState {
     }
 
     fn emit_jump(&mut self, op_code: OpCode, line: u64) -> Result<usize> {
-        println!("{}\t[EMIT JMP]\t\t{}", "[COMPILER]".blue().bold(), op_code);
-        // let line = self.parser.previous()?.line;
+        if LOG_COMPILER {
+            println!("{}\t[EMIT JMP]\t\t{}", "[COMPILER]".blue().bold(), op_code);
+        }
         self.function.chunk.write(op_code, line);
         self.function.chunk.write_byte(0xff, line);
         self.function.chunk.write_byte(0xff, line);
@@ -161,6 +189,40 @@ impl FunctionState {
             Ok(())
         }
     }
+
+    fn resolve_local(&self, token: &Token) -> Result<Option<u8>> {
+        for (i, local) in self.locals.iter().enumerate().rev() {
+            if token.data == local.name.data  {
+                if local.depth == -1 {
+                    // If we want to enable syntax along the lines of
+                    //     var a = 0;
+                    //     { var a = a; }
+                    // We have to make sure this error does not get returned
+                    // if we don't have to. But the local will get declared
+                    // before this point anyway.
+                    return Err(CompileError::LocalInitializer);
+                }
+                return Ok(Some(i as u8));
+            }
+        }
+        Ok(None)
+    }
+
+    fn add_upvalue(&mut self, index: u8, is_local: bool) -> Result<u8> {
+        if self.upvalues.len() == std::u8::MAX as usize {
+            panic!("Too many closure variables in function");
+        }
+
+        // Check if this upvalue already exists.
+        for (i, upvalue) in self.upvalues.iter().enumerate() {
+            if upvalue.index == index && upvalue.is_local == is_local {
+                return Ok(i as u8);
+            }
+        }
+        self.upvalues.push(Upvalue::new(index, is_local));
+        self.function.num_upvalues = self.upvalues.len();
+        Ok((self.upvalues.len() - 1) as u8)
+    }
 }
 
 impl<'s, 'src: 's> Compiler<'src> {
@@ -175,7 +237,9 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     pub fn compile(mut self) -> Result<Function> {
-        println!("COMPILING SOURCE: {}", self.source);
+        if LOG_COMPILED_CODE {
+            println!("COMPILING SOURCE: {}", self.source);
+        }
         self.advance();
 
         // Create the main script.
@@ -195,17 +259,10 @@ impl<'s, 'src: 's> Compiler<'src> {
             }
             Err(CompileError::Default(self.errors))
         } else {
-            let name = if let Some(object) = self.gc.functions.last().unwrap().function.name.clone() {
-                match &object.get().data {
-                    Object::String(object) => {
-                        object.to_owned()
-                    },
-                    _ => "<script>".to_owned(),
-                }
-            } else {
-                "<script>".to_owned()
-            };
-            debug::disassemble_chunk(&self.gc.functions.last().unwrap().function.chunk, &name);
+            if LOG_COMPILED_CODE {
+                let name = self.gc.functions.last().unwrap().function.function_name();
+                debug::disassemble_chunk(&self.gc.functions.last().unwrap().function.chunk, name);
+            }
             let fun = self.gc.functions.last().unwrap().function.clone();
             Ok(fun)
         }
@@ -220,7 +277,9 @@ impl<'s, 'src: 's> Compiler<'src> {
             match self.scanner.scan_token() {
                 Ok(token) => {
                     self.parser.current = Some(token);
-                    println!("{}\t[ADVANCE]\t\t{:?}", "[COMPILER]".blue(), self.parser.current().unwrap());
+                    if LOG_COMPILER {
+                        println!("{}\t[ADVANCE]\t\t{:?}", "[COMPILER]".blue(), self.parser.current().unwrap());
+                    }
                     return;
                 }
                 Err(err) => {
@@ -373,37 +432,56 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::DefineGlobal, index, self.parser.line())
     }
 
-    fn resolve_local(&mut self, token: Token) -> Result<Option<u8>> {
-        for (i, local) in self.gc.functions.last().unwrap().locals.iter().enumerate().rev() {
-            println!("LOCAL: {:?}", local);
-            if token.data == local.name.data  {
-                if local.depth == -1 {
-                    // If we want to enable syntax along the lines of
-                    //     var a = 0;
-                    //     { var a = a; }
-                    // We have to make sure this error does not get returned
-                    // if we don't have to. But the local will get declared
-                    // before this point anyway.
-                    return Err(CompileError::LocalInitializer);
+    fn resolve_local(&self, token: &Token) -> Result<Option<u8>> {
+        self.gc.functions.last().unwrap().resolve_local(token)
+    }
+
+    fn resolve_upvalue(&mut self, state_index: usize, token: &Token) -> Result<Option<u8>> {
+        if state_index == 0 {
+            return Ok(None);
+        }
+
+        // We want to skip over checking for locals in the current function state.
+        if let Some(previous_state) = self.gc.functions.get_mut(state_index - 1) {
+            if let Some(local_index) = previous_state.resolve_local(token)? {
+                previous_state.locals[local_index as usize].is_captured = true;
+                let upvalue_index = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(local_index, true)?;
+                if LOG_COMPILER {
+                    println!("[UPVALUE] is_local: {} index: {}", true, upvalue_index);
                 }
-                return Ok(Some(i as u8));
+                return Ok(Some(upvalue_index));
+            } else {
+                if let Some(upvalue_index) = self.resolve_upvalue(state_index - 1, token)? {
+                    let upvalue_index = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(upvalue_index, false)?;
+                    if LOG_COMPILER {
+                        println!("[UPVALUE] is_local: {} index: {}", false, upvalue_index);
+                    }
+                    return Ok(Some(upvalue_index));
+                }
             }
         }
+
         Ok(None)
     }
 
     fn named_variable(&mut self, token: Token, can_assign: bool) -> Result<()> {
-        let (arg, set_op, get_op) = if let Some(arg) = self.resolve_local(token.clone())? {
+        let (arg, set_op, get_op) = if let Some(arg) = self.resolve_local(&token)? {
             (arg, OpCode::SetLocal, OpCode::GetLocal)
+        } else if let Some(arg) = self.resolve_upvalue(self.gc.functions.len() - 1, &token)? {
+            (arg, OpCode::SetUpvalue, OpCode::GetUpvalue)
         } else {
             let arg = self.identifier_constant(token.data.clone());
             (arg, OpCode::SetGlobal, OpCode::GetGlobal)
         };
 
-        println!(
-            "{}\t[NAMED VARIABLE]\t{:?} | CAN_ASSIGN: {}",
-            "[COMPILER]".blue(), token, can_assign
-        );
+        
+        if LOG_COMPILER {
+            println!(
+                "{}\t[NAMED VARIABLE]\t{:?} | CAN_ASSIGN: {}",
+                "[COMPILER]".blue(), token, can_assign
+            );
+        }
+        
 
         if self.match_token(TokenKind::Equal)? && can_assign {
             self.expression()?;
@@ -454,17 +532,33 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.block()?;
 
         // We skip leaving the scope, as those pops shouldn't be needed.
-        
-        // Swap back and add new function as a constant.
-        // std::mem::swap(&mut self.fun_state, &mut state);
-        // let state = self.memory.borrow_mut().function_state.pop().unwrap();
-        // std::mem::swap(&mut state.borrow_mut(), &mut self.gc.functions.last_mut().unwrap());
-        // let state = self.fun_state.replace(previous);
-        let state = self.gc.functions.pop().unwrap();
+        let mut state = self.gc.functions.pop().unwrap();
+
+        // Add implicit return.
+        if let Some(op) = state.function.chunk.code.last() {
+            if *op != OpCode::Return as u8 {
+                state.function.chunk.code.push(OpCode::Return as u8);
+            }
+        }
 
         let fun = self.gc.track_function(state.function.clone());
+        if LOG_COMPILED_CODE {
+            let name = fun.as_function().unwrap().function_name();
+            debug::disassemble_chunk(&fun.as_function().unwrap().chunk, name);
+        }
         let index = self.add_constant(Value::Object(fun));
-        self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())?;
+        // self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())?;
+        let closure = self.gc.functions.last_mut().unwrap();
+        let line = self.parser.line();
+        closure.emit_bytes(OpCode::Closure, index, line)?;
+
+        for upvalue in state.upvalues.iter() {
+            let is_local: u8 = if upvalue.is_local { 1 } else { 0 };
+            closure.emit_raw(is_local, line)?;
+            closure.emit_raw(upvalue.index, line)?;
+        }
+
+
         Ok(())
     }
 
@@ -638,8 +732,12 @@ impl<'s, 'src: 's> Compiler<'src> {
             if local.depth <= fun.scope_depth {
                 break;
             }
+            if local.is_captured {
+                fun.emit_byte(OpCode::CloseUpvalue, self.parser.line())?;
+            } else {
+                fun.emit_byte(OpCode::Pop, self.parser.line())?;
+            }
             fun.locals.pop();
-            fun.emit_byte(OpCode::Pop, self.parser.line())?;
         }
         Ok(())
     }
@@ -761,10 +859,12 @@ impl<'s, 'src: 's> Compiler<'src> {
             .get_rule(operator_type)
             .ok_or(CompileError::ParseRuleNotFound)?;
         let higher_precedence = rule.precedence.higher();
-        println!(
-            "{}\t[BINARY]\t\t{:?} | PRECEDENCE: {:?} | PRECEDENCE_HIGHER: {:?} | OPERATOR: {:?}",
-            "[COMPILER]".blue(), rule, rule.precedence, higher_precedence, operator_type
-        );
+        if LOG_COMPILER {
+            println!(
+                "{}\t[BINARY]\t\t{:?} | PRECEDENCE: {:?} | PRECEDENCE_HIGHER: {:?} | OPERATOR: {:?}",
+                "[COMPILER]".blue(), rule, rule.precedence, higher_precedence, operator_type
+            );
+        }
         self.parse_precedence(higher_precedence)?;
 
         // Emit the operator instruction.

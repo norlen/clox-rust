@@ -28,6 +28,10 @@ pub enum OpCode {
     Jump,
     Loop,
     Call,
+    Closure,
+    GetUpvalue,
+    SetUpvalue,
+    CloseUpvalue,
 }
 
 impl Into<u8> for OpCode {
@@ -76,6 +80,10 @@ impl OpCode {
             OpCode::Jump => "Jump",
             OpCode::Loop => "Loop",
             OpCode::Call => "Call",
+            OpCode::Closure => "Closure",
+            OpCode::GetUpvalue => "GetUpvalue",
+            OpCode::SetUpvalue => "SetUpvalue",
+            OpCode::CloseUpvalue => "CloseUpvalue",
         }
     }
 }

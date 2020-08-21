@@ -5,9 +5,8 @@ use crate::compiler::CompileError;
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
 use crate::gc::GC;
 use crate::instruction::OpCode;
-use crate::object::Allocated;
-use crate::object::Object;
-use crate::value::*;
+use crate::object::{Allocated, Object, Function, NativeFunction, NativeFn, Closure, Upvalue};
+use crate::value::Value;
 
 pub type Result<T> = std::result::Result<T, VMError>;
 
@@ -28,15 +27,15 @@ pub enum VMError {
 
 #[derive(Clone)]
 pub struct CallFrame {
-    function: Function,
+    closure: Closure,
     ip: usize,
     stack_base: usize,
 }
 
 impl CallFrame {
-    fn new(function: Function, stack_base: usize) -> Self {
+    fn new(closure: Closure, stack_base: usize) -> Self {
         Self {
-            function,
+            closure,
             ip: 0,
             stack_base,
         }
@@ -44,7 +43,7 @@ impl CallFrame {
 
     fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.function
+        self.closure.function.as_function().unwrap()
             .chunk
             .code
             .get(self.ip - 1)
@@ -53,24 +52,15 @@ impl CallFrame {
     }
 
     fn peek_instruction(&mut self, offset: i64) -> Result<u8> {
-        let index = self.function.chunk.code.len() as i64 - offset;
-        assert!(self.function.chunk.code.len() < std::i64::MAX as usize);
+        let index = self.code().len() as i64 - offset;
+        assert!(self.code().len() < std::i64::MAX as usize);
         assert!(index > 0);
-        self.function
-            .chunk
-            .code
-            .get(index as usize)
-            .copied()
-            .ok_or(VMError::RuntimeError)
+        self.code().get(index as usize).copied().ok_or(VMError::RuntimeError)
     }
 
     fn next_instruction_as_constant(&mut self) -> Result<&Value> {
-        let index = self.next_instruction()?;
-        self.function
-            .chunk
-            .constants
-            .get(index as usize)
-            .ok_or(VMError::RuntimeError)
+        let index = self.next_instruction()? as usize;
+        self.constants().get(index).ok_or(VMError::RuntimeError)
     }
 
     fn next_instruction_as_jump(&mut self) -> Result<usize> {
@@ -78,15 +68,28 @@ impl CallFrame {
         let b1 = self.next_instruction()? as usize;
         Ok(b0 << 8 | b1)
     }
+
+    fn function(&self) -> &Function {
+        self.closure.function.as_function().unwrap()
+    }
+
+    fn code(&self) -> &Vec<u8> {
+        &self.closure.function.as_function().unwrap().chunk.code
+    }
+
+    fn constants(&self) -> &Vec<Value> {
+        &self.closure.function.as_function().unwrap().chunk.constants
+    }
 }
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
+    open_upvalues: Vec<Allocated<Object>>,
 }
 
 impl<'gc> VM<'gc> {
     pub fn new(gc: &'gc mut GC) -> Self {
-        let mut vm = Self { gc };
+        let mut vm = Self { gc, open_upvalues: Vec::new() };
 
         vm.define_native("clock".to_owned(), native_clock);
         vm
@@ -94,18 +97,22 @@ impl<'gc> VM<'gc> {
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
         let tracked_func = self.gc.track_function(func.clone());
-        self.gc.stack.push(Value::Object(tracked_func));
-        self.gc
-            .call_frames
-            .push(CallFrame::new(func, self.gc.stack.len() - 1));
+        self.gc.stack.push(Value::Object(tracked_func.clone()));
+        let closure = Closure::new(tracked_func);
+        self.gc.stack.pop();
+
+        // Put the closure at the beginning of the stack and set up the call frame.
+        let closure = Value::Object(self.gc.track_closure(closure));
+        self.gc.stack.push(closure.clone());
+        self.call_value(closure, 0)?;
 
         if let Err(err) = self.run() {
             // Stack trace.
             for frame in self.gc.call_frames.iter().rev() {
-                let name = frame.function.function_name();
+                let name = frame.function().function_name();
                 let instruction = frame.ip - 1;
                 let line = frame
-                    .function
+                    .function()
                     .chunk
                     .lines
                     .get(instruction)
@@ -135,12 +142,12 @@ impl<'gc> VM<'gc> {
     fn run(&mut self) -> Result<()> {
         let mut frame = self.gc.call_frames.pop().ok_or(VMError::RuntimeError)?;
 
-        while frame.ip < frame.function.chunk.code.len() {
+        while frame.ip < frame.code().len() {
             let instruction = frame.next_instruction()?;
             let instruction = OpCode::from(instruction);
 
             if TRACE_EXECUTION_STACK || TRACE_EXECUTION_INSTR {
-                let r = debug::disassemble_instruction(&frame.function.chunk, frame.ip - 1);
+                let r = debug::disassemble_instruction(&frame.function().chunk, frame.ip - 1);
                 if TRACE_EXECUTION_STACK {
                     if self.gc.stack.len() > 0 {
                         let mut stack_str = Vec::new();
@@ -164,7 +171,17 @@ impl<'gc> VM<'gc> {
 
             match instruction {
                 OpCode::Return => {
-                    self.op_return(&mut frame)?;
+                    let result = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+
+                    if self.gc.call_frames.len() == 0 {
+                        self.gc.stack.pop();
+                        return Ok(());
+                    }
+
+                    self.gc.stack.truncate(frame.stack_base);
+                    frame = self.gc.call_frames.pop().unwrap();
+
+                    self.gc.stack.push(result);
                 }
                 OpCode::Constant => {
                     let constant = frame.next_instruction_as_constant()?;
@@ -332,9 +349,74 @@ impl<'gc> VM<'gc> {
                     self.call_value(fun, arg_count)?;
                     frame = self.gc.call_frames.pop().unwrap();
                 }
+                OpCode::Closure => {
+                    let function = frame.next_instruction_as_constant()?.as_object().unwrap();
+                    let mut closure = self.gc.track_closure(Closure::new(function));
+                    self.gc.stack.push(Value::Object(closure.clone()));
+                    let closure = closure.as_closure_mut().unwrap();
+                    for _ in 0..closure.upvalue_count {
+                        let is_local = if frame.next_instruction()? == 1 { true } else { false };
+                        let index = frame.next_instruction()? as usize;
+                        if is_local {
+                            let upvalue = self.capture_upvalue(frame.stack_base + index);
+                            closure.upvalues.push(upvalue);
+                        } else {
+                            let upvalue = frame.closure.upvalues.get(index).unwrap();
+                            closure.upvalues.push(upvalue.clone());
+                        }
+                    }
+                }
+                OpCode::SetUpvalue => {
+                    let slot = frame.next_instruction()? as usize;
+                    let value = self.gc.stack.last().unwrap().clone();
+                    frame.closure.upvalues[slot].as_upvalue_mut().set(value);
+                }
+                OpCode::GetUpvalue => {
+                    let slot = frame.next_instruction()? as usize;
+                    let value = frame.closure.upvalues[slot].as_upvalue().unwrap().get().clone();
+                    self.gc.stack.push(value);
+                }
+                OpCode::CloseUpvalue => {
+                    self.close_upvalues()?;
+                    self.gc.stack.pop();
+                }
             }
         }
+        println!("Done");
         Ok(())
+    }
+
+    fn close_upvalues(&mut self) -> Result<()> {
+        let last = self.gc.stack.last().unwrap().as_upvalue().unwrap();
+        while let Some(mut upvalue) = self.open_upvalues.pop() {
+            let upvalue = upvalue.as_upvalue_mut();
+            upvalue.closed = Some(upvalue.get().clone());
+            upvalue.location = upvalue.closed.as_mut().unwrap() as *mut _;
+
+            if upvalue.location == last.location {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn capture_upvalue(&mut self, local_index: usize) -> Allocated<Object> {
+        let upvalue = {
+            let local = self.gc.stack.get_mut(local_index).unwrap();
+
+            for upvalue in self.open_upvalues.iter().rev() {
+                if std::ptr::eq(upvalue.as_upvalue().unwrap().location, local) {
+                    return upvalue.clone();
+                }
+            }
+
+            let upvalue = Upvalue::new(local);
+            upvalue
+        };
+        let upvalue = self.gc.track_upvalue(upvalue);
+        self.open_upvalues.push(upvalue.clone());
+        upvalue
     }
 
     fn op_binary(&mut self, op: fn(f64, f64) -> f64) -> Result<()> {
@@ -346,21 +428,6 @@ impl<'gc> VM<'gc> {
             }
             _ => return Err(VMError::TypeError("operand must be a number.".to_owned())),
         }
-        Ok(())
-    }
-
-    fn op_return(&mut self, frame: &mut CallFrame) -> Result<()> {
-        let result = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-
-        if self.gc.call_frames.len() == 0 {
-            self.gc.stack.pop();
-            return Ok(());
-        }
-
-        self.gc.stack.truncate(frame.stack_base);
-        *frame = self.gc.call_frames.pop().unwrap();
-
-        self.gc.stack.push(result);
         Ok(())
     }
 
@@ -413,7 +480,7 @@ impl<'gc> VM<'gc> {
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
         match &fun {
             Value::Object(object) => match &object.get().data {
-                Object::Function(fun) => self.call(&fun, arg_count),
+                // Object::Function(fun) => self.call(&fun, arg_count),
                 Object::Native(native_fn) => {
                     let s = self.gc.stack.len() - arg_count - 1;
                     let e = self.gc.stack.len();
@@ -423,18 +490,24 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(result);
                     Ok(())
                 }
+                Object::Closure(closure) => {
+                    self.call(closure, arg_count)
+                }
                 _ => panic!(),
             },
             _ => Err(VMError::RuntimeError),
         }
     }
 
-    fn call(&mut self, fun: &Function, arg_count: usize) -> Result<()> {
-        if arg_count != fun.arity as usize {
-            panic!("Expected {} arguments but got {}", fun.arity, arg_count);
+    fn call(&mut self, closure: &Closure, arg_count: usize) -> Result<()> {
+        let function = closure.function.as_function().unwrap();
+        if arg_count != function.arity as usize {
+            panic!("Expected {} arguments but got {}", function.arity, arg_count);
         }
 
-        let call_frame = CallFrame::new(fun.clone(), self.gc.stack.len() - arg_count - 1);
+        // TODO: Do we have to pass the Allocated<Object> to the CallFrame here?
+        // Or can it figure it that the function is a root anyway?
+        let call_frame = CallFrame::new(closure.clone(), self.gc.stack.len() - arg_count - 1);
         self.gc.call_frames.push(call_frame);
 
         if self.gc.call_frames.len() > 255 {
@@ -755,5 +828,79 @@ mod tests {
             closure();
         "#;
         assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_closure2() {
+        let source = r#"
+        fun makeClosure(value) {
+            fun closure() {
+                print value;
+            }
+            return closure;
+        }
+
+        var doughnut = makeClosure("doughnut");
+        var bagel = makeClosure("bagel");
+        doughnut();
+        bagel();
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_closure3() {
+        let source = r#"
+        fun outer() {
+            var x = "value";
+            fun middle() {
+                fun inner() {
+                    print x;
+                }
+
+                print "create inner closure";
+                return inner;
+            }
+            print "return from outer";
+            return middle;
+        }
+        var mid = outer();
+        var in = mid();
+        in();
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_closure4() {
+        let source = r#"
+            fun outer() {
+                var x = "outside";
+                fun inner() {
+                    print x;
+                }
+                inner();
+            }
+            outer();
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_closure5() {
+        let source = r#"
+        fun outer() {
+            var x = "outside";
+            fun inner() {
+              print x;
+            }
+          
+            return inner;
+          }
+          
+          var closure = outer();
+          closure();
+          "#;
+          assert!(run(source).is_ok());
     }
 }

@@ -1,8 +1,8 @@
 use colored::*;
 use std::collections::HashMap;
 
-use crate::value::*;
-use crate::object::{Object, Allocated, Traced};
+use crate::value::Value;
+use crate::object::{Object, Allocated, Traced, Function, NativeFn, Closure, Upvalue};
 use crate::vm::CallFrame;
 use crate::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
@@ -81,6 +81,20 @@ impl GC {
     pub fn track_native(&mut self, native_fn: NativeFn) -> Allocated<Object> {
         self.on_track(std::mem::size_of::<NativeFn>());
         self.objects.push(Box::new(Traced::new(Object::Native(native_fn))));
+        let object = self.objects.last_mut().unwrap();
+        Allocated::new(object)
+    }
+
+    pub fn track_closure(&mut self, closure: Closure) -> Allocated<Object> {
+        self.on_track(std::mem::size_of::<Closure>());
+        self.objects.push(Box::new(Traced::new(Object::Closure(closure))));
+        let object = self.objects.last_mut().unwrap();
+        Allocated::new(object)
+    }
+
+    pub fn track_upvalue(&mut self, upvalue: Upvalue) -> Allocated<Object> {
+        self.on_track(std::mem::size_of::<Upvalue>());
+        self.objects.push(Box::new(Traced::new(Object::Upvalue(upvalue))));
         let object = self.objects.last_mut().unwrap();
         Allocated::new(object)
     }
@@ -209,6 +223,8 @@ impl GC {
                 let size = match removed.data {
                     Object::Function(_) => std::mem::size_of::<Function>(),
                     Object::Native(_) => std::mem::size_of::<NativeFn>(),
+                    Object::Closure(_) => std::mem::size_of::<Closure>(),
+                    Object::Upvalue(_) => std::mem::size_of::<Upvalue>(),
                     Object::String(_) => panic!("Should never enouncter a string here"),
                 };
                 self.on_sweep(size);
@@ -258,6 +274,12 @@ impl GC {
                 object.chunk.constants.iter().for_each(|constant| {
                     self.mark_value(constant.clone());
                 });
+            }
+            Object::Closure(ref closure) => {
+                // TODO!
+            }
+            Object::Upvalue(ref upvalue) => {
+                // TODO!
             }
         }
     }

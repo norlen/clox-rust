@@ -19,6 +19,8 @@ mod vm;
 mod gc;
 mod object;
 
+mod memory;
+
 use compiler::Compiler;
 use vm::VM;
 use gc::GC;
