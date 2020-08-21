@@ -1,5 +1,5 @@
+use crate::memory::{Allocated, Closure, Function, NativeFn, Object, Upvalue};
 use std::fmt;
-use crate::memory::{Object, Allocated, Closure, Function, NativeFn, Upvalue};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -26,7 +26,9 @@ impl Value {
             (Value::Number(lhs), Value::Number(rhs)) => Some(lhs == rhs),
             (Value::Nil, Value::Nil) => Some(true),
             (Value::Bool(lhs), Value::Bool(rhs)) => Some(lhs == rhs),
-            (Value::Object(lhs), Value::Object(rhs)) => Some(std::ptr::eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())),
+            (Value::Object(lhs), Value::Object(rhs)) => {
+                Some(std::ptr::eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr()))
+            }
             _ => None,
         }
     }
@@ -62,4 +64,3 @@ impl Value {
         self.as_object_ref().get().data.as_upvalue()
     }
 }
-

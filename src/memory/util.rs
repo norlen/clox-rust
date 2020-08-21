@@ -1,10 +1,9 @@
-use std::fmt::Debug;
-use std::ptr::NonNull;
-use std::ops::{DerefMut, Deref};
 use colored::*;
+use std::fmt::Debug;
+use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
 
-use crate::debug::{LOG_OBJECT};
-
+use crate::debug::LOG_OBJECT;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Traced<T: Debug> {

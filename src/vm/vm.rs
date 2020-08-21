@@ -1,8 +1,8 @@
 use colored::*;
 
-use super::{Result, VMError, value::Value, instruction::OpCode, CallFrame};
+use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::memory::{GC, Allocated, Object, Function, NativeFunction, NativeFn, Closure, Upvalue};
+use crate::memory::{Allocated, Closure, Function, NativeFn, NativeFunction, Object, Upvalue, GC};
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
@@ -11,7 +11,10 @@ pub struct VM<'gc> {
 
 impl<'gc> VM<'gc> {
     pub fn new(gc: &'gc mut GC) -> Self {
-        let mut vm = Self { gc, open_upvalues: Vec::new() };
+        let mut vm = Self {
+            gc,
+            open_upvalues: Vec::new(),
+        };
 
         vm.define_native("clock".to_owned(), native_clock);
         vm
@@ -277,7 +280,11 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(Value::Object(closure.clone()));
                     let closure = closure.as_closure_mut();
                     for _ in 0..closure.upvalue_count {
-                        let is_local = if frame.next_instruction()? == 1 { true } else { false };
+                        let is_local = if frame.next_instruction()? == 1 {
+                            true
+                        } else {
+                            false
+                        };
                         let index = frame.next_instruction()? as usize;
                         if is_local {
                             let upvalue = self.capture_upvalue(frame.stack_base + index);
@@ -404,9 +411,7 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(result);
                     Ok(())
                 }
-                Object::Closure(closure) => {
-                    self.call(closure, arg_count)
-                }
+                Object::Closure(closure) => self.call(closure, arg_count),
                 _ => panic!(),
             },
             _ => Err(VMError::RuntimeError),
@@ -416,7 +421,10 @@ impl<'gc> VM<'gc> {
     fn call(&mut self, closure: &Closure, arg_count: usize) -> Result<()> {
         let function = closure.function.as_function();
         if arg_count != function.arity as usize {
-            panic!("Expected {} arguments but got {}", function.arity, arg_count);
+            panic!(
+                "Expected {} arguments but got {}",
+                function.arity, arg_count
+            );
         }
 
         // TODO: Do we have to pass the Allocated<Object> to the CallFrame here?
@@ -461,9 +469,9 @@ mod tests {
 
     #[test]
     fn vm_raw_instructions() {
-        use crate::compiler::chunk::Chunk;
         use super::super::instruction;
         use super::super::value::Value;
+        use crate::compiler::chunk::Chunk;
 
         let add_constant = |chunk: &mut Chunk, value| {
             let index = chunk.add_constant(Value::Number(value));
@@ -815,6 +823,6 @@ mod tests {
           var closure = outer();
           closure();
           "#;
-          assert!(run(source).is_ok());
+        assert!(run(source).is_ok());
     }
 }

@@ -1,5 +1,5 @@
-use crate::memory::{Function, Closure};
-use super::{Result, VMError, value::Value};
+use super::{value::Value, Result, VMError};
+use crate::memory::{Closure, Function};
 
 #[derive(Clone)]
 pub struct CallFrame {
@@ -19,7 +19,9 @@ impl CallFrame {
 
     pub(super) fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.closure.function.as_function()
+        self.closure
+            .function
+            .as_function()
             .chunk
             .code
             .get(self.ip - 1)

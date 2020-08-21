@@ -51,7 +51,9 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         let idx = *chunk.code.get(index + 1).unwrap() as usize;
         let constant = chunk.read_constant(index).unwrap();
         match constant {
-            Value::Object(object) => format!("[const index] {}\t[variable] {:?}", idx, object.get()),
+            Value::Object(object) => {
+                format!("[const index] {}\t[variable] {:?}", idx, object.get())
+            }
             _ => format!("[value] {}", constant),
         }
     };
@@ -65,7 +67,11 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         let byte0 = chunk.code.get(index + 1).unwrap().clone() as i64;
         let byte1 = chunk.code.get(index + 2).unwrap().clone() as i64;
         let jump = (byte0 << 8) | byte1;
-        format!("[JUMP] {:+} ({})", sign * jump, index as i64 + 3 + sign * jump)
+        format!(
+            "[JUMP] {:+} ({})",
+            sign * jump,
+            index as i64 + 3 + sign * jump
+        )
     };
 
     let (text, bytes) = match op_code {
@@ -85,17 +91,15 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         | OpCode::Print
         | OpCode::CloseUpvalue
         | OpCode::Pop => ("".to_owned(), 1),
-        OpCode::Constant
-        | OpCode::DefineGlobal
-        | OpCode::GetGlobal
-        | OpCode::SetGlobal => (constant_instruction(), 2),
-        | OpCode::GetLocal
+        OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal => {
+            (constant_instruction(), 2)
+        }
+        OpCode::GetLocal
         | OpCode::SetLocal
         | OpCode::GetUpvalue
         | OpCode::SetUpvalue
         | OpCode::Call => (byte_instruction(), 2),
-        OpCode::JumpIfFalse
-        | OpCode::Jump => (jump_instruction(1), 3),
+        OpCode::JumpIfFalse | OpCode::Jump => (jump_instruction(1), 3),
         OpCode::Loop => (jump_instruction(-1), 3),
         OpCode::Closure => {
             let constant = *chunk.code.get(offset).unwrap();
@@ -104,7 +108,9 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
             let function = constant.as_function();
 
             let mut text = match constant {
-                Value::Object(object) => format!("[index] {}\t[variable] {:?}", offset-1, object.get()),
+                Value::Object(object) => {
+                    format!("[index] {}\t[variable] {:?}", offset - 1, object.get())
+                }
                 _ => format!("[value] {}", constant),
             };
 

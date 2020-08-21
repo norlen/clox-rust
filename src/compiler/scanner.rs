@@ -103,7 +103,12 @@ impl<'a> Scanner<'a> {
         Token::new(kind, data, self.line)
     }
 
-    fn create_token_match(&mut self, matches: char, if_matches: TokenKind, otherwise: TokenKind) -> Token {
+    fn create_token_match(
+        &mut self,
+        matches: char,
+        if_matches: TokenKind,
+        otherwise: TokenKind,
+    ) -> Token {
         if self.match_token(matches) {
             self.create_token(if_matches)
         } else {

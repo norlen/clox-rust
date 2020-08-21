@@ -1,10 +1,10 @@
-use std::fmt::{self, Debug};
 use colored::*;
+use std::fmt::{self, Debug};
 
 use super::Allocated;
-use crate::vm::{value::Value};
 use crate::compiler::chunk::Chunk;
 use crate::debug::LOG_OBJECT;
+use crate::vm::value::Value;
 
 #[derive(Debug, Clone)]
 pub enum Object {
@@ -29,7 +29,9 @@ impl fmt::Display for Object {
             Object::String(v) => write!(f, "{}", v),
             Object::Function(v) => write!(f, "<fn {}>", v.function_name()),
             Object::Native(v) => write!(f, "<native fn {}>", v.function_name()),
-            Object::Closure(v) => write!(f, "<closure {}>", v.function.as_function().function_name()),
+            Object::Closure(v) => {
+                write!(f, "<closure {}>", v.function.as_function().function_name())
+            }
             Object::Upvalue(_v) => write!(f, "upvalue"),
         }
     }
@@ -107,9 +109,7 @@ impl Upvalue {
     }
 
     pub fn get(&self) -> &Value {
-        unsafe {
-            self.location.as_ref().unwrap()
-        }
+        unsafe { self.location.as_ref().unwrap() }
     }
 }
 
@@ -145,7 +145,7 @@ impl Function {
         if let Some(object) = &self.name {
             match &object.get().data {
                 Object::String(object) => object.as_str(),
-                _ => default
+                _ => default,
             }
         } else {
             default
@@ -187,7 +187,7 @@ impl NativeFn {
         let default = "<script>";
         match &self.name.get().data {
             Object::String(object) => object.as_str(),
-            _ => default
+            _ => default,
         }
     }
 }

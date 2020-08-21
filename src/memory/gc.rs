@@ -1,11 +1,11 @@
 use colored::*;
 use std::collections::HashMap;
 
+use super::object::{Closure, Function, NativeFn, Object, Upvalue};
 use super::{Allocated, Traced};
-use super::object::{Object, Function, NativeFn, Closure, Upvalue};
-use crate::vm::{CallFrame, value::Value};
 use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
+use crate::vm::{value::Value, CallFrame};
 
 const DEFAULT_NEXT_GC: usize = 1024 * 1024;
 const HEAP_GROW_FACTOR: usize = 2;
@@ -63,16 +63,18 @@ impl GC {
     /// Adds a string to the garbage collector.
     pub fn track_string(&mut self, string: String) -> Allocated<Object> {
         self.on_track(std::mem::size_of::<String>());
-        let string = self.interned_strings.entry(string.clone()).or_insert_with(|| {
-            Box::new(Traced::new(Object::String(string)))
-        });
+        let string = self
+            .interned_strings
+            .entry(string.clone())
+            .or_insert_with(|| Box::new(Traced::new(Object::String(string))));
         Allocated::new(string)
     }
 
     /// Adds a function to the gargbace collector.
     pub fn track_function(&mut self, function: Function) -> Allocated<Object> {
         self.on_track(std::mem::size_of::<Function>());
-        self.objects.push(Box::new(Traced::new(Object::Function(function))));
+        self.objects
+            .push(Box::new(Traced::new(Object::Function(function))));
         let object = self.objects.last_mut().unwrap();
         Allocated::new(object)
     }
@@ -80,21 +82,24 @@ impl GC {
     /// Adds a native function to the garbage collector.
     pub fn track_native(&mut self, native_fn: NativeFn) -> Allocated<Object> {
         self.on_track(std::mem::size_of::<NativeFn>());
-        self.objects.push(Box::new(Traced::new(Object::Native(native_fn))));
+        self.objects
+            .push(Box::new(Traced::new(Object::Native(native_fn))));
         let object = self.objects.last_mut().unwrap();
         Allocated::new(object)
     }
 
     pub fn track_closure(&mut self, closure: Closure) -> Allocated<Object> {
         self.on_track(std::mem::size_of::<Closure>());
-        self.objects.push(Box::new(Traced::new(Object::Closure(closure))));
+        self.objects
+            .push(Box::new(Traced::new(Object::Closure(closure))));
         let object = self.objects.last_mut().unwrap();
         Allocated::new(object)
     }
 
     pub fn track_upvalue(&mut self, upvalue: Upvalue) -> Allocated<Object> {
         self.on_track(std::mem::size_of::<Upvalue>());
-        self.objects.push(Box::new(Traced::new(Object::Upvalue(upvalue))));
+        self.objects
+            .push(Box::new(Traced::new(Object::Upvalue(upvalue))));
         let object = self.objects.last_mut().unwrap();
         Allocated::new(object)
     }
@@ -129,23 +134,31 @@ impl GC {
         self.next_gc = self.bytes_allocated * HEAP_GROW_FACTOR;
 
         if LOG_GC {
-            println!("{}\t\tCollected {} bytes (from {} to {}) next at {}", "[GC]".cyan(), before - self.bytes_allocated, before, self.bytes_allocated, self.next_gc);
+            println!(
+                "{}\t\tCollected {} bytes (from {} to {}) next at {}",
+                "[GC]".cyan(),
+                before - self.bytes_allocated,
+                before,
+                self.bytes_allocated,
+                self.next_gc
+            );
             println!("{}", "[GC]\t\tEND".cyan());
         }
     }
 
     fn mark_roots(&mut self) {
         // Helper to grab the object inside if it exists.
-        let filter_objects = |v: &Value| {
-            match v {
-                Value::Object(obj) => Some(obj.clone()),
-                _ => None,
-            }
+        let filter_objects = |v: &Value| match v {
+            Value::Object(obj) => Some(obj.clone()),
+            _ => None,
         };
 
         // Mark stack.
-        let stack_objects: Vec<Allocated<Object>> = self.stack.iter().filter_map(filter_objects).collect();
-        stack_objects.iter().for_each(|o| self.mark_object(o.clone()));
+        let stack_objects: Vec<Allocated<Object>> =
+            self.stack.iter().filter_map(filter_objects).collect();
+        stack_objects
+            .iter()
+            .for_each(|o| self.mark_object(o.clone()));
         // self.mark_objects(&mut stack_objects.iter_mut());
 
         // Mark globals.
@@ -163,9 +176,11 @@ impl GC {
         // Mark compiler roots.
         // Since the function being compiled isn't tracked yet by the GC
         // we have to go inside and mark the constantly directly.
-        let compiler_objects: Vec<Allocated<Object>> = self.functions.iter().flat_map(|f| {
-            f.function.chunk.constants.iter().filter_map(filter_objects)
-        }).collect();
+        let compiler_objects: Vec<Allocated<Object>> = self
+            .functions
+            .iter()
+            .flat_map(|f| f.function.chunk.constants.iter().filter_map(filter_objects))
+            .collect();
         self.mark_objects(compiler_objects.into_iter());
     }
 
@@ -177,7 +192,7 @@ impl GC {
             self.blacken(value);
         }
     }
-    
+
     /// Marks values as reachable if is an object, otherwise it does nothing.
     fn mark_value(&mut self, value: Value) {
         match value {
@@ -185,28 +200,38 @@ impl GC {
                 self.mark_object(object);
             }
             // Only objects are managed by the GC.
-            _ => {},
+            _ => {}
         }
     }
 
     /// Sweeps all objects left as white, as they cannot be reached any more.
     fn sweep(&mut self) {
         // Sweep interned strings.
-        let unmarked_keys: Vec<String> = self.interned_strings.iter().filter_map(|(key, value)| {
-            if !value.marked {
-                Some(key.clone())
-            } else {
-                None
-            }
-        }).collect();
+        let unmarked_keys: Vec<String> = self
+            .interned_strings
+            .iter()
+            .filter_map(|(key, value)| {
+                if !value.marked {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         // Since we're using regular strings in a regular hash table we have to remove possible global values that
         // are being sweeped, as they won't get automatically removed.
-        unmarked_keys.iter().for_each(|s| { self.globals.remove(s); });
+        unmarked_keys.iter().for_each(|s| {
+            self.globals.remove(s);
+        });
 
         for unmarked_key in unmarked_keys {
             if LOG_GC {
-                println!("{}\t\t[Sweep interned string] {}", "[GC]".cyan(), unmarked_key);
+                println!(
+                    "{}\t\t[Sweep interned string] {}",
+                    "[GC]".cyan(),
+                    unmarked_key
+                );
             }
             self.on_sweep(std::mem::size_of::<String>());
             self.interned_strings.remove(&unmarked_key);
@@ -217,7 +242,11 @@ impl GC {
         while i < self.objects.len() {
             if !self.objects.get(i).unwrap().marked {
                 if LOG_GC {
-                    println!("{}\t\t[Sweep object] {:?}", "[GC]".cyan(), self.objects.get(i).unwrap().data);
+                    println!(
+                        "{}\t\t[Sweep object] {:?}",
+                        "[GC]".cyan(),
+                        self.objects.get(i).unwrap().data
+                    );
                 }
                 let removed = self.objects.swap_remove(i);
                 let size = match removed.data {
@@ -228,7 +257,7 @@ impl GC {
                     Object::String(_) => panic!("Should never enouncter a string here"),
                 };
                 self.on_sweep(size);
-                // Don't increment i as we swap the last element to this location.
+            // Don't increment i as we swap the last element to this location.
             } else {
                 self.objects[i].marked = false;
                 i += 1;
@@ -244,7 +273,12 @@ impl GC {
         // to the gray list.
         if !object.get().marked {
             if LOG_GC {
-                println!("{}\t\tMarking: [{:?}] {:?}", "[GC]".cyan(), object, object.get());
+                println!(
+                    "{}\t\tMarking: [{:?}] {:?}",
+                    "[GC]".cyan(),
+                    object,
+                    object.get()
+                );
             }
             object.get_mut().marked = true;
             self.gray_list.push(object);
@@ -260,7 +294,12 @@ impl GC {
     /// by the object.
     fn blacken(&mut self, object: Allocated<Object>) {
         if LOG_GC {
-            println!("{}\t\tBlacken: [{:?}] {:?}", "[GC]".cyan(), object, object.get());
+            println!(
+                "{}\t\tBlacken: [{:?}] {:?}",
+                "[GC]".cyan(),
+                object,
+                object.get()
+            );
         }
         match object.get().data {
             Object::String(_) => return,

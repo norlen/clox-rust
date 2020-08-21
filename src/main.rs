@@ -7,13 +7,13 @@ use std::io::{self, BufRead};
 use std::path::Path;
 
 mod compiler;
+mod debug;
 mod memory;
 mod vm;
-mod debug;
 
 use compiler::compiler::Compiler;
-use vm::vm::VM;
 use memory::GC;
+use vm::vm::VM;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let file_path = std::env::args().nth(1);
@@ -40,7 +40,6 @@ fn run_file(path: &Path, gc: &mut GC) -> Result<(), Box<dyn Error>> {
 }
 
 fn interpret(source: &str, gc: &mut GC) -> Result<(), Box<dyn Error>> {
-
     let function = {
         let compiler = Compiler::new(source, gc);
         compiler.compile()?

@@ -1,5 +1,5 @@
-use thiserror::Error;
 use crate::compiler::compiler::CompileError;
+use thiserror::Error;
 
 mod call_frame;
 pub mod instruction;

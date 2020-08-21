@@ -1,10 +1,13 @@
-use thiserror::Error;
 use colored::*;
+use thiserror::Error;
 
+use super::{
+    scanner::{Scanner, ScannerError},
+    token::{Token, TokenKind},
+};
 use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
-use super::{scanner::{Scanner, ScannerError}, token::{Token, TokenKind}};
-use crate::vm::{value::Value, instruction::OpCode};
-use crate::memory::{GC, Function, Allocated, Object};
+use crate::memory::{Allocated, Function, Object, GC};
+use crate::vm::{instruction::OpCode, value::Value};
 
 #[derive(Debug, Error)]
 pub enum CompileError {
@@ -58,7 +61,11 @@ struct Local {
 
 impl Local {
     fn new(name: Token, depth: i64) -> Self {
-        Self { name, depth, is_captured: false }
+        Self {
+            name,
+            depth,
+            is_captured: false,
+        }
     }
 }
 
@@ -123,7 +130,11 @@ impl FunctionState {
 
     fn emit_raw(&mut self, byte: u8, line: u64) -> Result<()> {
         if LOG_COMPILER {
-            println!("{}\t[EMIT]\t\t\t[BYTE]: {}", "[COMPILER]".blue().bold(), byte);
+            println!(
+                "{}\t[EMIT]\t\t\t[BYTE]: {}",
+                "[COMPILER]".blue().bold(),
+                byte
+            );
         }
         self.function.chunk.write_byte(byte, line);
         Ok(())
@@ -139,7 +150,12 @@ impl FunctionState {
 
     fn emit_bytes(&mut self, op_code: OpCode, index: u8, line: u64) -> Result<()> {
         if LOG_COMPILER {
-            println!("{}\t[EMIT]\t\t\t{} -> {}", "[COMPILER]".blue().bold(), op_code, index);
+            println!(
+                "{}\t[EMIT]\t\t\t{} -> {}",
+                "[COMPILER]".blue().bold(),
+                op_code,
+                index
+            );
         }
         self.function.chunk.write_index(op_code, index, line);
         Ok(())
@@ -172,7 +188,9 @@ impl FunctionState {
             Err(CompileError::InvalidJump)
         } else {
             // let line = self.parser.previous()?.line;
-            self.function.chunk.write_byte((offset >> 8) as u8 & 0xff, line);
+            self.function
+                .chunk
+                .write_byte((offset >> 8) as u8 & 0xff, line);
             self.function.chunk.write_byte((offset & 0xff) as u8, line);
             Ok(())
         }
@@ -194,7 +212,7 @@ impl FunctionState {
 
     fn resolve_local(&self, token: &Token) -> Result<Option<u8>> {
         for (i, local) in self.locals.iter().enumerate().rev() {
-            if token.data == local.name.data  {
+            if token.data == local.name.data {
                 if local.depth == -1 {
                     // If we want to enable syntax along the lines of
                     //     var a = 0;
@@ -252,7 +270,11 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.decl()?;
         }
 
-        self.gc.functions.last_mut().unwrap().emit_return(self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_return(self.parser.line())?;
 
         if !self.errors.is_empty() {
             println!("Display all errors encountered:");
@@ -269,18 +291,22 @@ impl<'s, 'src: 's> Compiler<'src> {
             Ok(fun)
         }
     }
-    
+
     /// Scan for the next token, ignores any errors while scanning.
     /// But they are still added to the errors vector.
     fn advance(&mut self) {
         std::mem::swap(&mut self.parser.previous, &mut self.parser.current);
-        
+
         loop {
             match self.scanner.scan_token() {
                 Ok(token) => {
                     self.parser.current = Some(token);
                     if LOG_COMPILER {
-                        println!("{}\t[ADVANCE]\t\t{:?}", "[COMPILER]".blue(), self.parser.current().unwrap());
+                        println!(
+                            "{}\t[ADVANCE]\t\t{:?}",
+                            "[COMPILER]".blue(),
+                            self.parser.current().unwrap()
+                        );
                     }
                     return;
                 }
@@ -291,7 +317,7 @@ impl<'s, 'src: 's> Compiler<'src> {
             }
         }
     }
-    
+
     fn match_token(&mut self, kind: TokenKind) -> Result<bool> {
         let current_token = self.parser.current()?;
         if current_token.kind == kind {
@@ -399,14 +425,26 @@ impl<'s, 'src: 's> Compiler<'src> {
         if self.gc.functions.last().unwrap().locals.len() > std::u8::MAX as usize {
             Err(CompileError::LocalCount)
         } else {
-            self.gc.functions.last_mut().unwrap().locals.push(Local::new(name, -1));
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .locals
+                .push(Local::new(name, -1));
             Ok(())
         }
     }
 
     fn add_constant(&mut self, constant: Value) -> u8 {
         self.gc.stack.push(constant.clone());
-        let ret = self.gc.functions.last_mut().unwrap().function.chunk.add_constant(constant);
+        let ret = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .function
+            .chunk
+            .add_constant(constant);
         self.gc.stack.pop();
         ret
     }
@@ -419,10 +457,17 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     fn mark_local_initialized(&mut self) -> Result<()> {
         if self.gc.functions.last().unwrap().scope_depth == 0 {
-            return Ok(())
+            return Ok(());
         }
         let new_value = self.gc.functions.last().unwrap().scope_depth;
-        self.gc.functions.last_mut().unwrap().locals.last_mut().unwrap().depth = new_value;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .locals
+            .last_mut()
+            .unwrap()
+            .depth = new_value;
         Ok(())
     }
 
@@ -431,7 +476,11 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.mark_local_initialized()?;
             return Ok(());
         }
-        self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::DefineGlobal, index, self.parser.line())
+        self.gc.functions.last_mut().unwrap().emit_bytes(
+            OpCode::DefineGlobal,
+            index,
+            self.parser.line(),
+        )
     }
 
     fn resolve_local(&self, token: &Token) -> Result<Option<u8>> {
@@ -447,14 +496,24 @@ impl<'s, 'src: 's> Compiler<'src> {
         if let Some(previous_state) = self.gc.functions.get_mut(state_index - 1) {
             if let Some(local_index) = previous_state.resolve_local(token)? {
                 previous_state.locals[local_index as usize].is_captured = true;
-                let upvalue_index = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(local_index, true)?;
+                let upvalue_index = self
+                    .gc
+                    .functions
+                    .get_mut(state_index)
+                    .unwrap()
+                    .add_upvalue(local_index, true)?;
                 if LOG_COMPILER {
                     println!("[UPVALUE] is_local: {} index: {}", true, upvalue_index);
                 }
                 return Ok(Some(upvalue_index));
             } else {
                 if let Some(upvalue_index) = self.resolve_upvalue(state_index - 1, token)? {
-                    let upvalue_index = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(upvalue_index, false)?;
+                    let upvalue_index = self
+                        .gc
+                        .functions
+                        .get_mut(state_index)
+                        .unwrap()
+                        .add_upvalue(upvalue_index, false)?;
                     if LOG_COMPILER {
                         println!("[UPVALUE] is_local: {} index: {}", false, upvalue_index);
                     }
@@ -476,20 +535,28 @@ impl<'s, 'src: 's> Compiler<'src> {
             (arg, OpCode::SetGlobal, OpCode::GetGlobal)
         };
 
-        
         if LOG_COMPILER {
             println!(
                 "{}\t[NAMED VARIABLE]\t{:?} | CAN_ASSIGN: {}",
-                "[COMPILER]".blue(), token, can_assign
+                "[COMPILER]".blue(),
+                token,
+                can_assign
             );
         }
-        
 
         if self.match_token(TokenKind::Equal)? && can_assign {
             self.expression()?;
-            self.gc.functions.last_mut().unwrap().emit_bytes(set_op, arg, self.parser.line())?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_bytes(set_op, arg, self.parser.line())?;
         } else {
-            self.gc.functions.last_mut().unwrap().emit_bytes(get_op, arg, self.parser.line())?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_bytes(get_op, arg, self.parser.line())?;
         }
         Ok(())
     }
@@ -559,7 +626,6 @@ impl<'s, 'src: 's> Compiler<'src> {
             closure.emit_raw(upvalue.index, line)?;
         }
 
-
         Ok(())
     }
 
@@ -587,9 +653,16 @@ impl<'s, 'src: 's> Compiler<'src> {
         if self.match_token(TokenKind::Equal)? {
             self.expression()?;
         } else {
-            self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Nil, self.parser.line())?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Nil, self.parser.line())?;
         }
-        self.consume(TokenKind::Semicolon, "Expect ';' after variable declaration")?;
+        self.consume(
+            TokenKind::Semicolon,
+            "Expect ';' after variable declaration",
+        )?;
 
         self.define_variable(global)
     }
@@ -621,11 +694,19 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
 
         if self.match_token(TokenKind::Semicolon)? {
-            self.gc.functions.last_mut().unwrap().emit_return(self.parser.line())
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_return(self.parser.line())
         } else {
             self.expression()?;
             self.consume(TokenKind::Semicolon, "Expect ';' after return value")?;
-            self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Return, self.parser.line())
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Return, self.parser.line())
         }
     }
 
@@ -635,7 +716,6 @@ impl<'s, 'src: 's> Compiler<'src> {
 
         // Initializer clause.
         if self.match_token(TokenKind::Semicolon)? {
-
         } else if self.match_token(TokenKind::Var)? {
             self.var_declaration()?;
         } else {
@@ -651,11 +731,20 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.consume(TokenKind::Semicolon, "Expect ';' after loop condition")?;
 
             // Jump out of the loop if the condition is false.
-            let exit_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
-            self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+            let exit_jump = self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Pop, self.parser.line())?;
             Some(exit_jump)
         };
-        
+
         // Increment clause.
         // This is a bit weird, since we want this to run after the for loop body
         // we jump to the increment location (loop_start), we set it to the start
@@ -663,24 +752,53 @@ impl<'s, 'src: 's> Compiler<'src> {
         // unconditional jump that goes straight to the body, and after the expression
         // we jump to the actual start of the loop, i.e. the condition clause.
         if !self.match_token(TokenKind::ParenRight)? {
-            let body_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::Jump, self.parser.line())?;
+            let body_jump = self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_jump(OpCode::Jump, self.parser.line())?;
             let increment_start = self.gc.functions.last().unwrap().function.chunk.code.len();
 
             self.expression()?;
-            self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Pop, self.parser.line())?;
             self.consume(TokenKind::ParenRight, "Expect ')' after for clauses")?;
-            
-            self.gc.functions.last_mut().unwrap().emit_loop(loop_start, self.parser.line())?;
+
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_loop(loop_start, self.parser.line())?;
             loop_start = increment_start;
-            self.gc.functions.last_mut().unwrap().patch_jump(body_jump)?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .patch_jump(body_jump)?;
         }
 
         self.statement()?;
 
-        self.gc.functions.last_mut().unwrap().emit_loop(loop_start, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_loop(loop_start, self.parser.line())?;
         if let Some(exit_jump) = exit_jump {
-            self.gc.functions.last_mut().unwrap().patch_jump(exit_jump)?;
-            self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .patch_jump(exit_jump)?;
+            self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Pop, self.parser.line())?;
         }
         self.scope_leave()
     }
@@ -693,14 +811,35 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.expression()?;
         self.consume(TokenKind::ParenRight, "Expect ')' after 'while'")?;
 
-        let exit_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+        let exit_jump = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())?;
 
         self.statement()?;
-        self.gc.functions.last_mut().unwrap().emit_loop(loop_start, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_loop(loop_start, self.parser.line())?;
 
-        self.gc.functions.last_mut().unwrap().patch_jump(exit_jump)?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .patch_jump(exit_jump)?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())
     }
 
     fn if_statement(&mut self) -> Result<()> {
@@ -708,14 +847,36 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.expression()?;
         self.consume(TokenKind::ParenRight, "Expect ')' after condition")?;
 
-        let then_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?; // Pop condition if condition is false.
+        let then_jump = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())?; // Pop condition if condition is false.
         self.statement()?;
-        let else_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::Jump, self.parser.line())?;
+        let else_jump = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_jump(OpCode::Jump, self.parser.line())?;
 
-        self.gc.functions.last_mut().unwrap().patch_jump(then_jump)?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?; // Pop condition if condition is true.
-    
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .patch_jump(then_jump)?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())?; // Pop condition if condition is true.
+
         if self.match_token(TokenKind::Else)? {
             self.statement()?;
         }
@@ -758,14 +919,22 @@ impl<'s, 'src: 's> Compiler<'src> {
     fn expression_statement(&mut self) -> Result<()> {
         self.expression()?;
         self.consume(TokenKind::Semicolon, "Expect ';' after expression")?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())?;
         Ok(())
     }
 
     fn print_statement(&mut self) -> Result<()> {
         self.expression()?;
         self.consume(TokenKind::Semicolon, "Expect ';' after value")?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Print, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Print, self.parser.line())?;
         Ok(())
     }
 
@@ -783,19 +952,24 @@ impl<'s, 'src: 's> Compiler<'src> {
     fn number(&mut self, _can_assign: bool) -> Result<()> {
         let value = self.parser.previous()?.data.parse::<f64>()?;
         let index = self.add_constant(Value::Number(value));
-        self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())
+        self.gc.functions.last_mut().unwrap().emit_bytes(
+            OpCode::Constant,
+            index,
+            self.parser.line(),
+        )
     }
 
     fn string(&mut self, _can_assign: bool) -> Result<()> {
-        let src_str = self
-            .parser
-            .previous()?
-            .data.clone();
+        let src_str = self.parser.previous()?.data.clone();
         // Skip " at beginning and end.
         let string = src_str[1..src_str.len() - 1].to_owned();
         let string = self.gc.track_string(string);
         let index = self.add_constant(Value::Object(string));
-        self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())
+        self.gc.functions.last_mut().unwrap().emit_bytes(
+            OpCode::Constant,
+            index,
+            self.parser.line(),
+        )
     }
 
     fn unary(&mut self, _can_assign: bool) -> Result<()> {
@@ -803,27 +977,63 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.parse_precedence(Precedence::Unary)?;
 
         match operator_type {
-            TokenKind::Minus => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Negate, self.parser.line()),
-            TokenKind::Bang => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Not, self.parser.line()),
+            TokenKind::Minus => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Negate, self.parser.line()),
+            TokenKind::Bang => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Not, self.parser.line()),
             // Unreachable.
             _ => panic!(),
         }
     }
 
     fn and(&mut self) -> Result<()> {
-
-        let end_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+        let end_jump = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())?;
         self.parse_precedence(Precedence::And)?;
         self.gc.functions.last_mut().unwrap().patch_jump(end_jump)
     }
 
     fn or(&mut self) -> Result<()> {
-        let else_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
-        let end_jump = self.gc.functions.last_mut().unwrap().emit_jump(OpCode::Jump, self.parser.line())?;
+        let else_jump = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_jump(OpCode::JumpIfFalse, self.parser.line())?;
+        let end_jump = self
+            .gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_jump(OpCode::Jump, self.parser.line())?;
 
-        self.gc.functions.last_mut().unwrap().patch_jump(else_jump)?;
-        self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Pop, self.parser.line())?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .patch_jump(else_jump)?;
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(OpCode::Pop, self.parser.line())?;
 
         self.parse_precedence(Precedence::Or)?;
         self.gc.functions.last_mut().unwrap().patch_jump(end_jump)
@@ -831,7 +1041,11 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     fn call(&mut self) -> Result<()> {
         let arg_count = self.argument_list()?;
-        self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Call, arg_count, self.parser.line())
+        self.gc.functions.last_mut().unwrap().emit_bytes(
+            OpCode::Call,
+            arg_count,
+            self.parser.line(),
+        )
     }
 
     fn argument_list(&mut self) -> Result<u8> {
@@ -870,24 +1084,83 @@ impl<'s, 'src: 's> Compiler<'src> {
 
         // Emit the operator instruction.
         match operator_type {
-            TokenKind::Plus => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Add, self.parser.line())?,
-            TokenKind::Minus => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Subtract, self.parser.line())?,
-            TokenKind::Star => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Multiply, self.parser.line())?,
-            TokenKind::Slash => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Divide, self.parser.line())?,
+            TokenKind::Plus => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Add, self.parser.line())?,
+            TokenKind::Minus => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Subtract, self.parser.line())?,
+            TokenKind::Star => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Multiply, self.parser.line())?,
+            TokenKind::Slash => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Divide, self.parser.line())?,
             TokenKind::BangEqual => {
-                self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Equal, self.parser.line())?;
-                self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Not, self.parser.line())?;
+                self.gc
+                    .functions
+                    .last_mut()
+                    .unwrap()
+                    .emit_byte(OpCode::Equal, self.parser.line())?;
+                self.gc
+                    .functions
+                    .last_mut()
+                    .unwrap()
+                    .emit_byte(OpCode::Not, self.parser.line())?;
             }
-            TokenKind::EqualEqual => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Equal, self.parser.line())?,
-            TokenKind::Greater => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Greater, self.parser.line())?,
+            TokenKind::EqualEqual => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Equal, self.parser.line())?,
+            TokenKind::Greater => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Greater, self.parser.line())?,
             TokenKind::GreaterEqual => {
-                self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Less, self.parser.line())?;
-                self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Not, self.parser.line())?;
+                self.gc
+                    .functions
+                    .last_mut()
+                    .unwrap()
+                    .emit_byte(OpCode::Less, self.parser.line())?;
+                self.gc
+                    .functions
+                    .last_mut()
+                    .unwrap()
+                    .emit_byte(OpCode::Not, self.parser.line())?;
             }
-            TokenKind::Less => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Less, self.parser.line())?,
+            TokenKind::Less => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Less, self.parser.line())?,
             TokenKind::LessEqual => {
-                self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Greater, self.parser.line())?;
-                self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Not, self.parser.line())?;
+                self.gc
+                    .functions
+                    .last_mut()
+                    .unwrap()
+                    .emit_byte(OpCode::Greater, self.parser.line())?;
+                self.gc
+                    .functions
+                    .last_mut()
+                    .unwrap()
+                    .emit_byte(OpCode::Not, self.parser.line())?;
             }
             _ => panic!(),
         }
@@ -897,9 +1170,24 @@ impl<'s, 'src: 's> Compiler<'src> {
     fn literal(&mut self, _can_assign: bool) -> Result<()> {
         let op_kind = self.parser.previous()?.kind;
         match op_kind {
-            TokenKind::Nil => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::Nil, self.parser.line())?,
-            TokenKind::True => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::True, self.parser.line())?,
-            TokenKind::False => self.gc.functions.last_mut().unwrap().emit_byte(OpCode::False, self.parser.line())?,
+            TokenKind::Nil => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::Nil, self.parser.line())?,
+            TokenKind::True => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::True, self.parser.line())?,
+            TokenKind::False => self
+                .gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_byte(OpCode::False, self.parser.line())?,
             _ => panic!(),
         }
         Ok(())
