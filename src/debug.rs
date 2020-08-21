@@ -109,7 +109,7 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
 
             let mut text = match constant {
                 Value::Object(object) => {
-                    format!("[index] {}\t[variable] {:?}", offset - 1, object.get())
+                    format!("[index] {}\t[variable] {}", offset - 1, object.get())
                 }
                 _ => format!("[value] {}", constant),
             };
@@ -121,7 +121,8 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
                 offset += 1;
 
                 let is_local = if *is_local == 1 { "local" } else { "upvalue" };
-                text += format!("\n{:<15}{} {} ", "|", is_local, upvalue_index).as_str();
+                let t = format!("{:<10}\t [index] {} ", is_local, upvalue_index);
+                text += format!("\n{:04}      | {}", offset - 2, t).as_str();
             }
 
             (text, offset - index)

@@ -26,7 +26,7 @@ impl Drop for Object {
 impl fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Object::String(v) => write!(f, "{}", v),
+            Object::String(v) => write!(f, "{}", v.as_str()),
             Object::Function(v) => write!(f, "<fn {}>", v.function_name()),
             Object::Native(v) => write!(f, "<native fn {}>", v.function_name()),
             Object::Closure(v) => {
@@ -52,19 +52,19 @@ impl Object {
         }
     }
 
-    pub fn as_native(&self) -> &NativeFn {
-        match self {
-            Object::Native(native) => native,
-            _ => panic!("Expected native function"),
-        }
-    }
+    // pub fn as_native(&self) -> &NativeFn {
+    //     match self {
+    //         Object::Native(native) => native,
+    //         _ => panic!("Expected native function"),
+    //     }
+    // }
 
-    pub fn as_closure(&self) -> &Closure {
-        match self {
-            Object::Closure(closure) => closure,
-            _ => panic!("Expected closure"),
-        }
-    }
+    // pub fn as_closure(&self) -> &Closure {
+    //     match self {
+    //         Object::Closure(closure) => closure,
+    //         _ => panic!("Expected closure"),
+    //     }
+    // }
 
     pub fn as_upvalue(&self) -> &Upvalue {
         match self {

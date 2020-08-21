@@ -21,10 +21,13 @@ impl<'gc> VM<'gc> {
     }
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
-        let tracked_func = self.gc.track_function(func.clone());
-        self.gc.stack.push(tracked_func.clone().into());
-        let closure = Closure::new(tracked_func);
-        self.gc.stack.pop();
+        let closure = {
+            let tracked_func = self.gc.track_function(func.clone());
+            self.gc.stack.push(tracked_func.clone().into());
+            let closure = Closure::new(tracked_func);
+            self.gc.stack.pop();
+            closure
+        };
 
         // Put the closure at the beginning of the stack and set up the call frame.
         let closure: Value = self.gc.track_closure(closure).into();
@@ -65,7 +68,7 @@ impl<'gc> VM<'gc> {
     }
 
     fn run(&mut self) -> Result<()> {
-        let mut frame = self.gc.call_frames.pop().ok_or(VMError::RuntimeError)?;
+        let mut frame = self.gc.call_frames.pop().ok_or(VMError::NoCallFrame)?;
 
         while frame.ip < frame.code().len() {
             let instruction = frame.next_instruction()?;
@@ -92,11 +95,14 @@ impl<'gc> VM<'gc> {
                 if TRACE_EXECUTION_INSTR {
                     println!("{}\t{:04}\t{}", "[Instruction]".green(), frame.ip - 1, r.0);
                 }
+                
+                self.print_upvalues(&frame);
             }
 
             match instruction {
                 OpCode::Return => {
-                    let result = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let result = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    self.close_upvalues()?;
 
                     if self.gc.call_frames.len() == 0 {
                         self.gc.stack.pop();
@@ -123,16 +129,16 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(Value::Bool(false));
                 }
                 OpCode::Equal => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     let result = lhs.equals(&rhs).ok_or_else(|| {
                         VMError::TypeError("cannot compare these values".to_owned())
                     })?;
                     self.gc.stack.push(Value::Bool(result));
                 }
                 OpCode::Greater => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
                             self.gc.stack.push(Value::Bool(lhs > rhs))
@@ -143,8 +149,8 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::Less => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
                             self.gc.stack.push(Value::Bool(lhs < rhs))
@@ -155,7 +161,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::Not => {
-                    let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     let value = match value {
                         Value::Bool(value) => Ok(!value),
                         Value::Nil => Ok(true),
@@ -164,7 +170,7 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(Value::Bool(value));
                 }
                 OpCode::Negate => {
-                    let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match value {
                         Value::Number(v) => {
                             self.gc.stack.push(Value::Number(-v));
@@ -175,8 +181,8 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::Add => {
-                    let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match (&lhs, &rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
                             self.gc.stack.push(Value::Number(lhs + rhs))
@@ -204,8 +210,8 @@ impl<'gc> VM<'gc> {
                     self.op_binary(|lhs, rhs| lhs / rhs)?;
                 }
                 OpCode::Print => {
-                    let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    println!("{}", value.as_string());
+                    let value = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    println!("{}", value);
                 }
                 OpCode::Pop => {
                     // We don't care about the value here, used in expression statements.
@@ -233,12 +239,12 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::SetLocal => {
                     let index = frame.next_instruction()?;
-                    let value = self.gc.stack.last().ok_or(VMError::RuntimeError)?.clone();
+                    let value = self.gc.stack.last().ok_or(VMError::EmptyStack)?.clone();
                     self.gc.stack[index as usize + frame.stack_base] = value;
                 }
                 OpCode::JumpIfFalse => {
                     let offset = frame.next_instruction_as_jump()?;
-                    let condition_value = match self.gc.stack.last().ok_or(VMError::RuntimeError)? {
+                    let condition_value = match self.gc.stack.last().ok_or(VMError::EmptyStack)? {
                         Value::Nil => false,
                         Value::Bool(val) => *val,
                         _ => panic!(),
@@ -271,6 +277,7 @@ impl<'gc> VM<'gc> {
                     let mut closure = self.gc.track_closure(Closure::new(function));
                     self.gc.stack.push(closure.clone().into());
                     let closure = closure.as_closure_mut();
+                    println!("{}: {}\t{:?}", "Upvalue count".red(), closure.upvalue_count, closure.upvalues);
                     for _ in 0..closure.upvalue_count {
                         let is_local = if frame.next_instruction()? == 1 {
                             true
@@ -293,8 +300,10 @@ impl<'gc> VM<'gc> {
                     frame.closure.upvalues[slot].as_upvalue_mut().set(value);
                 }
                 OpCode::GetUpvalue => {
+                    self.print_upvalues(&frame);
                     let slot = frame.next_instruction()? as usize;
-                    let value = frame.closure.upvalues[slot].as_upvalue().get().clone();
+                    let upvalue = &frame.closure.upvalues[slot];
+                    let value = upvalue.as_upvalue().get().clone();
                     self.gc.stack.push(value);
                 }
                 OpCode::CloseUpvalue => {
@@ -307,14 +316,42 @@ impl<'gc> VM<'gc> {
         Ok(())
     }
 
-    fn close_upvalues(&mut self) -> Result<()> {
-        let last = self.gc.stack.last().unwrap().as_upvalue();
-        while let Some(mut upvalue) = self.open_upvalues.pop() {
-            let upvalue = upvalue.as_upvalue_mut();
-            upvalue.closed = Some(upvalue.get().clone());
-            upvalue.location = upvalue.closed.as_mut().unwrap() as *mut _;
+    fn print_upvalues(&self, frame: &CallFrame) {
+        println!("{} UPVALUES IN FRAME COUNT: {}", "[GET UPVALUE]".red(), frame.closure.upvalues.len());
+        println!("\t{} {:?}", "[ARR]".red(), frame.closure.upvalues);
+        for upvalue in frame.closure.upvalues.iter() {
+            let u = upvalue.get();
+            let uu = u.as_upvalue();
+            println!("\t| PTR: {:?} | OPEN: {:?} | CLOSED: {:?}", uu.location, unsafe { uu.location.as_ref() }, uu.closed);
+        }
+    }
 
-            if upvalue.location == last.location {
+    fn close_upvalues(&mut self) -> Result<()> {
+        let last = self.gc.stack.last_mut().unwrap();
+        println!("{}\tLAST_PTR: {:?} || OPEN: {:?}", "[CLOSE_UPVALUES]".blue(), last as *mut _, self.open_upvalues);
+        for upvalue in self.open_upvalues.iter() {
+            let up = upvalue.as_upvalue();
+            let up2 = unsafe { up.location.as_ref().unwrap() };
+            println!("   {} -> {:?}    | LOCATION < LAST: {}", "|".blue(), up2, up.location < last as *mut _);
+        }
+
+        loop {
+            if let Some(upvalue) = self.open_upvalues.last_mut() {
+                println!("\t{}: {:?} || -> {}", "FOUND".blue(), upvalue.as_upvalue(), unsafe { upvalue.as_upvalue().location.as_ref().unwrap() });
+                if upvalue.as_upvalue().location < last as *mut _ {
+                    println!("{} BREAK: upvalue.location < last", "[EXIT]".blue());
+                    break;
+                }
+                let upvalue = upvalue.as_upvalue_mut();
+                let loc_value = unsafe {
+                    upvalue.location.as_ref().unwrap().clone()
+                };
+                upvalue.closed = Some(loc_value);
+                upvalue.location = upvalue.closed.as_mut().unwrap() as *mut _;
+                println!("new upvalue: {:?}", upvalue);
+                self.open_upvalues.pop();
+            } else {
+                println!("{} BREAK: end of array", "[EXIT]".blue());
                 break;
             }
         }
@@ -323,11 +360,13 @@ impl<'gc> VM<'gc> {
     }
 
     fn capture_upvalue(&mut self, local_index: usize) -> Gc<Object> {
+        println!("{} local_index: {}", "[CAPTURE UPVALUE]".blue(), local_index);
         let upvalue = {
             let local = self.gc.stack.get_mut(local_index).unwrap();
 
             for upvalue in self.open_upvalues.iter().rev() {
                 if std::ptr::eq(upvalue.as_upvalue().location, local) {
+                    println!("\t{}: returning {:?} || -> {}", "EXISTS".blue(), upvalue.as_upvalue(), unsafe { upvalue.as_upvalue().location.as_ref().unwrap() });
                     return upvalue.clone();
                 }
             }
@@ -337,12 +376,13 @@ impl<'gc> VM<'gc> {
         };
         let upvalue = self.gc.track_upvalue(upvalue);
         self.open_upvalues.push(upvalue.clone());
+        println!("\t{}: {:?} || -> {}", "CREATING".blue(), upvalue.as_upvalue(), unsafe { upvalue.as_upvalue().location.as_ref().unwrap() });
         upvalue
     }
 
     fn op_binary(&mut self, op: fn(f64, f64) -> f64) -> Result<()> {
-        let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-        let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
+        let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+        let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
         match (lhs, rhs) {
             (Value::Number(lhs), Value::Number(rhs)) => {
                 self.gc.stack.push(Value::Number(op(lhs, rhs)))

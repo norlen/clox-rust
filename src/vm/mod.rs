@@ -20,4 +20,10 @@ pub enum VMError {
 
     #[error("Type mismatch: {}", .0)]
     TypeError(String),
+
+    #[error("Trying to access empty stack.")]
+    EmptyStack,
+
+    #[error("Trying to access empty list of call frames")]
+    NoCallFrame,
 }

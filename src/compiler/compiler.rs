@@ -491,34 +491,31 @@ impl<'s, 'src: 's> Compiler<'src> {
         if state_index == 0 {
             return Ok(None);
         }
+        let prev_index = state_index - 1;
 
         // We want to skip over checking for locals in the current function state.
-        if let Some(previous_state) = self.gc.functions.get_mut(state_index - 1) {
-            if let Some(local_index) = previous_state.resolve_local(token)? {
-                previous_state.locals[local_index as usize].is_captured = true;
-                let upvalue_index = self
-                    .gc
-                    .functions
-                    .get_mut(state_index)
-                    .unwrap()
-                    .add_upvalue(local_index, true)?;
+        if let Some(prev_state) = self.gc.functions.get_mut(prev_index) {
+
+            // See if the previous state has a local variable we want to capture.
+            if let Some(local_idx) = prev_state.resolve_local(token)? {
+                prev_state.locals[local_idx as usize].is_captured = true;
+
+                // Get the upvalue index.
+                let upvalue_idx = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(local_idx, true)?;
                 if LOG_COMPILER {
-                    println!("[UPVALUE] is_local: {} index: {}", true, upvalue_index);
+                    println!("[UPVALUE] is_local: {} index: {}", true, upvalue_idx);
                 }
-                return Ok(Some(upvalue_index));
+                return Ok(Some(upvalue_idx));
             } else {
-                if let Some(upvalue_index) = self.resolve_upvalue(state_index - 1, token)? {
-                    let upvalue_index = self
-                        .gc
-                        .functions
-                        .get_mut(state_index)
-                        .unwrap()
-                        .add_upvalue(upvalue_index, false)?;
+                // If we couldn't find a local variable, we search recursively.
+                if let Some(upvalue_idx) = self.resolve_upvalue(state_index - 1, token)? {
+                    let upvalue_idx = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(upvalue_idx, false)?;
                     if LOG_COMPILER {
-                        println!("[UPVALUE] is_local: {} index: {}", false, upvalue_index);
+                        println!("[UPVALUE] is_local: {} index: {}", false, upvalue_idx);
                     }
-                    return Ok(Some(upvalue_index));
+                    return Ok(Some(upvalue_idx));
                 }
+
             }
         }
 
@@ -568,62 +565,86 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn function(&mut self, kind: FunctionKind) -> Result<()> {
-        let name = self.parser.previous().unwrap().data.clone();
-        let name = self.gc.track_string(name);
-        let state = FunctionState::new(name, kind);
+        // Set up and compile the a function.
+        let last_state = {
+            // Create the new state.
+            let state = {
+                let name = self.parser.previous().unwrap().data.clone();
+                let name = self.gc.track_string(name);
+                FunctionState::new(name, kind)
+            };
 
-        self.gc.functions.push(state);
+            // We always operate on the latest state in the compiler.
+            self.gc.functions.push(state);
 
-        self.scope_enter();
+            // Start compiling the new function.
+            self.scope_enter();
 
-        // Compile the parameter list.
-        self.consume(TokenKind::ParenLeft, "Expect '(' after function name")?;
-        if !self.parser.check_current(TokenKind::ParenRight)? {
-            loop {
-                self.gc.functions.last_mut().unwrap().function.arity += 1;
-                if self.gc.functions.last().unwrap().function.arity > 255 {
-                    todo!("Cannot have more than 255 parameters.")
-                }
+            // Compile the parameter list.
+            self.consume(TokenKind::ParenLeft, "Expect '(' after function name")?;
+            if !self.parser.check_current(TokenKind::ParenRight)? {
+                loop {
+                    self.gc.functions.last_mut().unwrap().function.arity += 1;
+                    if self.gc.functions.last().unwrap().function.arity > 255 {
+                        todo!("Cannot have more than 255 parameters.")
+                    }
 
-                let parameter_constant = self.parse_variable("Expect parameter name")?;
-                self.define_variable(parameter_constant)?;
+                    let parameter_constant = self.parse_variable("Expect parameter name")?;
+                    self.define_variable(parameter_constant)?;
 
-                if !self.match_token(TokenKind::Comma)? {
-                    break;
+                    if !self.match_token(TokenKind::Comma)? {
+                        break;
+                    }
                 }
             }
-        }
-        self.consume(TokenKind::ParenRight, "Expect ')' after parameters")?;
+            self.consume(TokenKind::ParenRight, "Expect ')' after parameters")?;
 
-        // Compile function body.
-        self.consume(TokenKind::BraceLeft, "Expect '{' before function body")?;
-        self.block()?;
+            // Compile function body.
+            self.consume(TokenKind::BraceLeft, "Expect '{' before function body")?;
+            self.block()?;
 
-        // We skip leaving the scope, as those pops shouldn't be needed.
-        let mut state = self.gc.functions.pop().unwrap();
+            // We skip leaving the scope, as those pops shouldn't be needed.
+            // We can get and unwrap the last function state as we just created it above.
+            let mut state = self.gc.functions.pop().unwrap();
 
-        // Add implicit return.
-        if let Some(op) = state.function.chunk.code.last() {
-            if *op != OpCode::Return as u8 {
-                state.function.chunk.code.push(OpCode::Return as u8);
+            // Add implicit return if there wasn't a return in the function body.
+            if let Some(op) = state.function.chunk.code.last() {
+                if *op != OpCode::Return as u8 {
+                    state.function.chunk.code.push(OpCode::Return as u8);
+                }
             }
-        }
 
-        let fun = self.gc.track_function(state.function.clone());
-        if LOG_COMPILED_CODE {
-            let name = fun.as_function().function_name();
-            debug::disassemble_chunk(&fun.as_function().chunk, name);
-        }
-        let index = self.add_constant(fun.into());
-        // self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())?;
-        let closure = self.gc.functions.last_mut().unwrap();
+            if LOG_COMPILED_CODE {
+                debug::disassemble_chunk(&state.function.chunk, state.function.function_name());
+            }
+
+            state
+        };
+
+        // Add this closure as a constant to the outer one.
+        let index = {
+            // We ask the GC to track this new function.
+            let new_function = self.gc.track_function(last_state.function.clone());
+            
+            self.add_constant(new_function.into())
+        };
+
+        // Add upvalues we might have created.
+        let state = self.gc.functions.last_mut().unwrap();
         let line = self.parser.line();
-        closure.emit_bytes(OpCode::Closure, index, line)?;
 
-        for upvalue in state.upvalues.iter() {
-            let is_local: u8 = if upvalue.is_local { 1 } else { 0 };
-            closure.emit_raw(is_local, line)?;
-            closure.emit_raw(upvalue.index, line)?;
+        state.emit_bytes(OpCode::Closure, index, line)?;
+
+        println!("{}\tchecking for upvalues:", "[UPVALUE]".red());
+        println!("CURRENT FUNC: {}", state.function.function_name());
+        println!("{}\t{:?}", "[UPVALUE]".red(), state.upvalues);
+        println!("PREVIOUS UPVALUE COUNT: {}", last_state.function.num_upvalues);
+        println!("LAST UPVALUES: {:?}", last_state.upvalues);
+        for upvalue in last_state.upvalues.iter() {
+            let is_local = if upvalue.is_local { 1 } else { 0 };
+            state.emit_raw(is_local, line)?;
+            state.emit_raw(upvalue.index, line)?;
+            println!("{}\tJust emitted: {} {}", "[UPVALUE]".red(), is_local, upvalue.index);
         }
 
         Ok(())
@@ -888,9 +909,11 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn scope_leave(&mut self) -> Result<()> {
+        println!("Leaving scope");
         let mut fun = self.gc.functions.last_mut().unwrap();
         fun.scope_depth -= 1;
         while let Some(local) = fun.locals.last() {
+            println!("\tLOCAL: {:?}", local);
             if local.depth <= fun.scope_depth {
                 break;
             }
