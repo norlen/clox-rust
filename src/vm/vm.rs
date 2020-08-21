@@ -2,7 +2,7 @@ use colored::*;
 
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::memory::{Gc, Closure, Function, NativeFn, NativeFunction, Object, Upvalue, GC};
+use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upvalue, GC};
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
@@ -78,7 +78,7 @@ impl<'gc> VM<'gc> {
                         let mut stack_str = Vec::new();
                         for val in self.gc.stack.iter() {
                             let ss = match val {
-                                Value::Object(object) => format!(" [{}]", object.get().data),
+                                Value::Object(object) => format!(" [{}]", object.get()),
                                 _ => format!(" [{}]", val),
                             };
                             stack_str.push(ss);
@@ -181,16 +181,14 @@ impl<'gc> VM<'gc> {
                         (Value::Number(lhs), Value::Number(rhs)) => {
                             self.gc.stack.push(Value::Number(lhs + rhs))
                         }
-                        (Value::Object(lhs), Value::Object(rhs)) => {
-                            match (&lhs.get().data, &rhs.get().data) {
-                                (Object::String(lhs), Object::String(rhs)) => {
-                                    let new = lhs.clone() + rhs;
-                                    let new = self.gc.track_string(new);
-                                    self.gc.stack.push(new.into());
-                                }
-                                _ => todo!(),
+                        (Value::Object(lhs), Value::Object(rhs)) => match (lhs.get(), rhs.get()) {
+                            (Object::String(lhs), Object::String(rhs)) => {
+                                let new = lhs.clone() + rhs;
+                                let new = self.gc.track_string(new);
+                                self.gc.stack.push(new.into());
                             }
-                        }
+                            _ => todo!(),
+                        },
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
                         }
@@ -207,13 +205,7 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::Print => {
                     let value = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    match &value {
-                        Value::Object(object) => match &object.get().data {
-                            Object::String(object) => println!("{}", object),
-                            _ => panic!("trying to print rnadom objects"),
-                        },
-                        _ => println!("{}", value),
-                    };
+                    println!("{}", value.as_string());
                 }
                 OpCode::Pop => {
                     // We don't care about the value here, used in expression statements.
@@ -388,20 +380,9 @@ impl<'gc> VM<'gc> {
         Ok(())
     }
 
-    // fn get_string_object<'a>(&self, value: &'a Value) -> Result<&'a String> {
-    //     match value {
-    //         Value::Object(object) => match &object.get().data {
-    //             Object::String(string) => return Ok(string),
-    //             _ => panic!("expected string object for global variable"),
-    //         },
-    //         _ => panic!("expected object"),
-    //     }
-    // }
-
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
         match &fun {
-            Value::Object(object) => match &object.get().data {
-                // Object::Function(fun) => self.call(&fun, arg_count),
+            Value::Object(object) => match &object.get() {
                 Object::Native(native_fn) => {
                     let s = self.gc.stack.len() - arg_count - 1;
                     let e = self.gc.stack.len();

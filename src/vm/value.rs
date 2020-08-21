@@ -1,4 +1,4 @@
-use crate::memory::{Gc, Closure, Function, NativeFn, Object, Upvalue};
+use crate::memory::{Closure, Function, Gc, NativeFn, Object, Upvalue};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -51,22 +51,22 @@ impl Value {
     }
 
     pub fn as_string(&self) -> &String {
-        self.as_object_ref().get().data.as_string()
+        self.as_object_ref().get().as_string()
     }
 
     pub fn as_function(&self) -> &Function {
-        self.as_object_ref().get().data.as_function()
+        self.as_object_ref().get().as_function()
     }
 
     pub fn as_native(&self) -> &NativeFn {
-        self.as_object_ref().get().data.as_native()
+        self.as_object_ref().get().as_native()
     }
 
     pub fn as_closure(&self) -> &Closure {
-        self.as_object_ref().get().data.as_closure()
+        self.as_object_ref().get().as_closure()
     }
 
     pub fn as_upvalue(&self) -> &Upvalue {
-        self.as_object_ref().get().data.as_upvalue()
+        self.as_object_ref().get().as_upvalue()
     }
 }

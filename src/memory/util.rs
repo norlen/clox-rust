@@ -1,22 +1,35 @@
 use colored::*;
+use std::cell::Cell;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 use crate::debug::LOG_OBJECT;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct Traced<T: Debug> {
-    pub(super) marked: bool,
+    marked: Cell<bool>,
     pub data: T,
 }
 
 impl<T: Debug> Traced<T> {
     pub(super) fn new(data: T) -> Self {
         Self {
-            marked: false,
+            marked: Cell::new(false),
             data,
         }
+    }
+
+    pub(super) fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    pub(super) fn mark(&self) {
+        self.marked.set(true);
+    }
+
+    pub(super) fn unmark(&self) {
+        self.marked.set(false);
     }
 }
 
@@ -36,14 +49,24 @@ impl<T: Debug> Gc<T> {
         }
     }
 
-    pub fn get(&self) -> &Traced<T> {
+    pub fn get(&self) -> &T {
         // Yep!
-        unsafe { self.ptr.as_ref() }
+        unsafe { &self.ptr.as_ref().data }
     }
 
-    pub fn get_mut(&mut self) -> &mut Traced<T> {
+    pub fn get_mut(&mut self) -> &mut T {
         // Yep again!
-        unsafe { self.ptr.as_mut() }
+        unsafe { &mut self.ptr.as_mut().data }
+    }
+
+    pub(super) fn marked(&self) -> bool {
+        unsafe { self.ptr.as_ref().marked() }
+    }
+
+    pub(super) fn mark(&self) {
+        unsafe {
+            self.ptr.as_ref().mark();
+        }
     }
 }
 
@@ -51,12 +74,12 @@ impl<T: Debug> Deref for Gc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.get().data
+        &self.get()
     }
 }
 
 impl<T: Debug> DerefMut for Gc<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.get_mut().data
+        self.get_mut()
     }
 }

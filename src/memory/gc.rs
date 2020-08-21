@@ -154,8 +154,7 @@ impl GC {
         };
 
         // Mark stack.
-        let stack_objects: Vec<Gc<Object>> =
-            self.stack.iter().filter_map(filter_objects).collect();
+        let stack_objects: Vec<Gc<Object>> = self.stack.iter().filter_map(filter_objects).collect();
         stack_objects
             .iter()
             .for_each(|o| self.mark_object(o.clone()));
@@ -211,7 +210,7 @@ impl GC {
             .interned_strings
             .iter()
             .filter_map(|(key, value)| {
-                if !value.marked {
+                if !value.marked() {
                     Some(key.clone())
                 } else {
                     None
@@ -240,7 +239,7 @@ impl GC {
         // Sweep regular objects.
         let mut i = 0;
         while i < self.objects.len() {
-            if !self.objects.get(i).unwrap().marked {
+            if !self.objects.get(i).unwrap().marked() {
                 if LOG_GC {
                     println!(
                         "{}\t\t[Sweep object] {:?}",
@@ -259,19 +258,19 @@ impl GC {
                 self.on_sweep(size);
             // Don't increment i as we swap the last element to this location.
             } else {
-                self.objects[i].marked = false;
+                self.objects[i].unmark();
                 i += 1;
             }
         }
     }
 
     /// Marks objects as reachable, and adds them once to the gray list for further processing.
-    fn mark_object(&mut self, mut object: Gc<Object>) {
+    fn mark_object(&mut self, object: Gc<Object>) {
         // Using the tri-color abstraction with white, gray and black nodes.
         // If the node is set to gray, we have that as marked being true. If
         // this gets called again the node is black so we should not add it
         // to the gray list.
-        if !object.get().marked {
+        if !object.marked() {
             if LOG_GC {
                 println!(
                     "{}\t\tMarking: [{:?}] {:?}",
@@ -280,7 +279,7 @@ impl GC {
                     object.get()
                 );
             }
-            object.get_mut().marked = true;
+            object.mark();
             self.gray_list.push(object);
         }
     }
@@ -301,7 +300,7 @@ impl GC {
                 object.get()
             );
         }
-        match object.get().data {
+        match object.get() {
             Object::String(_) => return,
             Object::Native(_) => return,
             Object::Function(ref object) => {

@@ -1,7 +1,7 @@
 use colored::*;
 use std::fmt::{self, Debug};
 
-use super::{Gc, GC};
+use super::Gc;
 use crate::compiler::chunk::Chunk;
 use crate::debug::LOG_OBJECT;
 use crate::vm::value::Value;
@@ -143,7 +143,7 @@ impl Function {
     pub fn function_name(&self) -> &str {
         let default = "<script>";
         if let Some(object) = &self.name {
-            match &object.get().data {
+            match &object.get() {
                 Object::String(object) => object.as_str(),
                 _ => default,
             }
@@ -185,7 +185,7 @@ impl NativeFn {
 
     pub fn function_name(&self) -> &str {
         let default = "<script>";
-        match &self.name.get().data {
+        match self.name.get() {
             Object::String(object) => object.as_str(),
             _ => default,
         }

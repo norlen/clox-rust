@@ -6,7 +6,7 @@ use super::{
     token::{Token, TokenKind},
 };
 use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
-use crate::memory::{Gc, Function, Object, GC};
+use crate::memory::{Function, Gc, Object, GC};
 use crate::vm::{instruction::OpCode, value::Value};
 
 #[derive(Debug, Error)]
