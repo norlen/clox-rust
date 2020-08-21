@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use super::{Allocated, Traced};
 use super::object::{Object, Function, NativeFn, Closure, Upvalue};
-use crate::vm::{vm::CallFrame, value::Value};
+use crate::vm::{CallFrame, value::Value};
 use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
 

@@ -21,17 +21,7 @@ impl fmt::Display for Value {
 }
 
 impl Value {
-    pub fn equals(lhs: Value, rhs: Value) -> Option<bool> {
-        match (lhs, rhs) {
-            (Value::Number(lhs), Value::Number(rhs)) => Some(lhs == rhs),
-            (Value::Nil, Value::Nil) => Some(true),
-            (Value::Bool(lhs), Value::Bool(rhs)) => Some(lhs == rhs),
-            (Value::Object(lhs), Value::Object(rhs)) => Some(std::ptr::eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())),
-            _ => None,
-        }
-    }
-
-    pub fn equals2(&self, rhs: &Value) -> Option<bool> {
+    pub fn equals(&self, rhs: &Value) -> Option<bool> {
         match (self, rhs) {
             (Value::Number(lhs), Value::Number(rhs)) => Some(lhs == rhs),
             (Value::Nil, Value::Nil) => Some(true),
@@ -41,7 +31,6 @@ impl Value {
         }
     }
 
-    // TODO: Change the error type and return errors.
     pub fn as_object(&self) -> Allocated<Object> {
         self.as_object_ref().clone()
     }

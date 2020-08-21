@@ -27,9 +27,9 @@ impl fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Object::String(v) => write!(f, "{}", v),
-            Object::Function(_v) => write!(f, "<fn>"),
-            Object::Native(_v) => write!(f, "<native fn>"),
-            Object::Closure(_v) => write!(f, "<closure>"),
+            Object::Function(v) => write!(f, "<fn {}>", v.function_name()),
+            Object::Native(v) => write!(f, "<native fn {}>", v.function_name()),
+            Object::Closure(v) => write!(f, "<closure {}>", v.function.as_function().function_name()),
             Object::Upvalue(_v) => write!(f, "upvalue"),
         }
     }
@@ -131,7 +131,7 @@ impl Function {
         }
     }
 
-    fn new(name: Allocated<Object>) -> Self {
+    pub fn new(name: Allocated<Object>) -> Self {
         Self {
             name: Some(name),
             arity: 0,

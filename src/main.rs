@@ -1,5 +1,5 @@
 #![warn(rust_2018_idioms)]
-#![allow(dead_code)]
+// #![allow(dead_code)]
 
 use std::error::Error;
 use std::fs;

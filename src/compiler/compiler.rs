@@ -4,7 +4,7 @@ use colored::*;
 use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
 use super::{scanner::{Scanner, ScannerError}, token::{Token, TokenKind}};
 use crate::vm::{value::Value, instruction::OpCode};
-use crate::memory::{GC, Function};
+use crate::memory::{GC, Function, Allocated, Object};
 
 #[derive(Debug, Error)]
 pub enum CompileError {
@@ -16,9 +16,6 @@ pub enum CompileError {
 
     #[error("Error parsing number: {}", .0)]
     ParseFloatError(#[from] std::num::ParseFloatError),
-
-    #[error("Unexpected token: {}", .0)]
-    UnexpectedToken(TokenKind),
 
     #[error("Could not find token while parsing (should not happen)")]
     TokenNotFound,
@@ -44,9 +41,6 @@ pub enum CompileError {
     // Used internally in consume to provide error messages to the user.
     #[error("Internal error")]
     InternalError,
-
-    #[error("{}", .0)]
-    Str(&'static str)
 }
 
 type Result<T> = std::result::Result<T, CompileError>;
@@ -105,9 +99,20 @@ pub struct FunctionState {
 }
 
 impl FunctionState {
-    pub fn new(function_kind: FunctionKind) -> Self {
+    fn script() -> Self {
         Self {
             function: Function::blank(),
+            function_kind: FunctionKind::Script,
+            // The current function is always the first local, so we need to add one value here.
+            locals: vec![Local::new(Token::new_empty(), -1)],
+            scope_depth: 0,
+            upvalues: Vec::new(),
+        }
+    }
+
+    fn new(name: Allocated<Object>, function_kind: FunctionKind) -> Self {
+        Self {
+            function: Function::new(name),
             function_kind,
             // The current function is always the first local, so we need to add one value here.
             locals: vec![Local::new(Token::new_empty(), -1)],
@@ -240,7 +245,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.advance();
 
         // Create the main script.
-        let function_state = FunctionState::new(FunctionKind::Script);
+        let function_state = FunctionState::script();
         self.gc.functions.push(function_state);
 
         while !self.match_token(TokenKind::EOF)? {
@@ -496,10 +501,9 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn function(&mut self, kind: FunctionKind) -> Result<()> {
-        let mut state = FunctionState::new(kind);
-        let d = self.parser.previous().unwrap().data.to_owned();
-        let d = self.gc.track_string(d);
-        state.function.name = Some(d);
+        let name = self.parser.previous().unwrap().data.clone();
+        let name = self.gc.track_string(name);
+        let state = FunctionState::new(name, kind);
 
         self.gc.functions.push(state);
 

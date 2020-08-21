@@ -1,85 +1,8 @@
 use colored::*;
-use thiserror::Error;
 
-use crate::compiler::compiler::CompileError;
+use super::{Result, VMError, value::Value, instruction::OpCode, CallFrame};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
 use crate::memory::{GC, Allocated, Object, Function, NativeFunction, NativeFn, Closure, Upvalue};
-use super::value::Value;
-use super::instruction::OpCode;
-
-pub type Result<T> = std::result::Result<T, VMError>;
-
-#[derive(Debug, Error)]
-pub enum VMError {
-    #[error("Compile error")]
-    CompileError(#[from] CompileError),
-
-    #[error("Runtime error")]
-    RuntimeError,
-
-    #[error("Type mismatch: {}", .0)]
-    TypeError(String),
-
-    #[error("Undefined variable: {}", .0)]
-    UndefinedVariable(String),
-}
-
-#[derive(Clone)]
-pub struct CallFrame {
-    closure: Closure,
-    ip: usize,
-    stack_base: usize,
-}
-
-impl CallFrame {
-    fn new(closure: Closure, stack_base: usize) -> Self {
-        Self {
-            closure,
-            ip: 0,
-            stack_base,
-        }
-    }
-
-    fn next_instruction(&mut self) -> Result<u8> {
-        self.ip += 1;
-        self.closure.function.as_function()
-            .chunk
-            .code
-            .get(self.ip - 1)
-            .copied()
-            .ok_or(VMError::RuntimeError)
-    }
-
-    fn peek_instruction(&mut self, offset: i64) -> Result<u8> {
-        let index = self.code().len() as i64 - offset;
-        assert!(self.code().len() < std::i64::MAX as usize);
-        assert!(index > 0);
-        self.code().get(index as usize).copied().ok_or(VMError::RuntimeError)
-    }
-
-    fn next_instruction_as_constant(&mut self) -> Result<&Value> {
-        let index = self.next_instruction()? as usize;
-        self.constants().get(index).ok_or(VMError::RuntimeError)
-    }
-
-    fn next_instruction_as_jump(&mut self) -> Result<usize> {
-        let b0 = self.next_instruction()? as usize;
-        let b1 = self.next_instruction()? as usize;
-        Ok(b0 << 8 | b1)
-    }
-
-    fn function(&self) -> &Function {
-        self.closure.function.as_function()
-    }
-
-    fn code(&self) -> &Vec<u8> {
-        &self.closure.function.as_function().chunk.code
-    }
-
-    fn constants(&self) -> &Vec<Value> {
-        &self.closure.function.as_function().chunk.constants
-    }
-}
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
@@ -199,7 +122,7 @@ impl<'gc> VM<'gc> {
                 OpCode::Equal => {
                     let rhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
                     let lhs = self.gc.stack.pop().ok_or(VMError::RuntimeError)?;
-                    let result = Value::equals(lhs, rhs).ok_or_else(|| {
+                    let result = lhs.equals(&rhs).ok_or_else(|| {
                         VMError::TypeError("cannot compare these values".to_owned())
                     })?;
                     self.gc.stack.push(Value::Bool(result));
@@ -431,50 +354,42 @@ impl<'gc> VM<'gc> {
     }
 
     fn op_define_global(&mut self, frame: &mut CallFrame) -> Result<()> {
-        let next_instruction = frame.next_instruction_as_constant()?;
-        let string = self.get_string_object(next_instruction)?;
+        let global = frame.next_instruction_as_constant()?.as_string();
+        // let string = self.get_string_object(next_instruction)?;
         let value = self
             .gc
             .stack
             .get(self.gc.stack.len() - 1)
             .ok_or(VMError::RuntimeError)?;
-        self.gc.globals.insert(string.clone(), value.clone());
+        self.gc.globals.insert(global.clone(), value.clone());
         self.gc.stack.pop();
         Ok(())
     }
 
     fn op_get_global(&mut self, frame: &mut CallFrame) -> Result<()> {
-        let next_instruction = frame.next_instruction_as_constant()?;
-        let string = self.get_string_object(next_instruction)?;
-        let value = self.gc.globals.get(string).unwrap();
+        let global = frame.next_instruction_as_constant()?.as_string();
+        // let string = self.get_string_object(next_instruction)?;
+        let value = self.gc.globals.get(global).unwrap();
         self.gc.stack.push(value.clone());
         Ok(())
     }
 
     fn op_set_global(&mut self, frame: &mut CallFrame) -> Result<()> {
-        let next_instruction = frame.next_instruction_as_constant()?;
-        let string = self.get_string_object(next_instruction)?;
+        let global = frame.next_instruction_as_constant()?.as_string();
         let value = self.gc.stack.last().unwrap();
-        self.gc.globals.insert(string.clone(), value.clone());
+        self.gc.globals.insert(global.clone(), value.clone());
         Ok(())
     }
 
-    fn get_object<'a>(&self, value: &'a Value) -> Result<&'a Allocated<Object>> {
-        match value {
-            Value::Object(object) => Ok(object),
-            _ => panic!("expected object"),
-        }
-    }
-
-    fn get_string_object<'a>(&self, value: &'a Value) -> Result<&'a String> {
-        match value {
-            Value::Object(object) => match &object.get().data {
-                Object::String(string) => return Ok(string),
-                _ => panic!("expected string object for global variable"),
-            },
-            _ => panic!("expected object"),
-        }
-    }
+    // fn get_string_object<'a>(&self, value: &'a Value) -> Result<&'a String> {
+    //     match value {
+    //         Value::Object(object) => match &object.get().data {
+    //             Object::String(string) => return Ok(string),
+    //             _ => panic!("expected string object for global variable"),
+    //         },
+    //         _ => panic!("expected object"),
+    //     }
+    // }
 
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
         match &fun {
