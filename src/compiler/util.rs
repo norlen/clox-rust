@@ -1,20 +1,20 @@
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-pub struct StrCursor<'a> {
+pub(super) struct StrCursor<'a> {
     it: Peekable<CharIndices<'a>>,
-    pub index: usize,
+    pub(super) index: usize,
 }
 
 impl<'a> StrCursor<'a> {
-    pub fn new(source: &'a str) -> Self {
+    pub(super) fn new(source: &'a str) -> Self {
         Self {
             it: source.char_indices().peekable(),
             index: 0,
         }
     }
 
-    pub fn advance(&mut self) -> Option<char> {
+    pub(super) fn advance(&mut self) -> Option<char> {
         if let Some((index, ch)) = self.it.next() {
             self.index = index + 1;
             Some(ch)
@@ -23,17 +23,17 @@ impl<'a> StrCursor<'a> {
         }
     }
 
-    pub fn peek(&mut self) -> Option<char> {
+    pub(super) fn peek(&mut self) -> Option<char> {
         let p = self.it.peek();
         p.map(|v| v.1)
     }
 
-    pub fn peek_next(&mut self) -> Option<char> {
+    pub(super) fn peek_next(&mut self) -> Option<char> {
         let it = self.it.clone();
         it.skip(1).next().map(|v| v.1)
     }
 
-    pub fn advance_when<F>(&mut self, f: F)
+    pub(super) fn advance_when<F>(&mut self, f: F)
     where
         F: Fn(char) -> bool,
     {

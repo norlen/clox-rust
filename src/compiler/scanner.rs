@@ -1,5 +1,5 @@
-use crate::token::{Token, TokenKind};
-use crate::util::StrCursor;
+use super::token::{Token, TokenKind};
+use super::util::StrCursor;
 use radix_trie::Trie;
 use thiserror::Error;
 

@@ -1,6 +1,5 @@
-use crate::instruction::*;
-use crate::rle::RLE;
-use crate::value::Value;
+use super::rle::RLE;
+use crate::vm::{instruction::*, value::Value};
 
 #[derive(Debug, Default, Clone)]
 pub struct Chunk {

@@ -1,12 +1,11 @@
 use colored::*;
 use thiserror::Error;
 
-use crate::compiler::CompileError;
+use crate::compiler::compiler::CompileError;
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::gc::GC;
-use crate::instruction::OpCode;
-use crate::object::{Allocated, Object, Function, NativeFunction, NativeFn, Closure, Upvalue};
-use crate::value::Value;
+use crate::memory::{GC, Allocated, Object, Function, NativeFunction, NativeFn, Closure, Upvalue};
+use super::value::Value;
+use super::instruction::OpCode;
 
 pub type Result<T> = std::result::Result<T, VMError>;
 
@@ -43,7 +42,7 @@ impl CallFrame {
 
     fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.closure.function.as_function().unwrap()
+        self.closure.function.as_function()
             .chunk
             .code
             .get(self.ip - 1)
@@ -70,15 +69,15 @@ impl CallFrame {
     }
 
     fn function(&self) -> &Function {
-        self.closure.function.as_function().unwrap()
+        self.closure.function.as_function()
     }
 
     fn code(&self) -> &Vec<u8> {
-        &self.closure.function.as_function().unwrap().chunk.code
+        &self.closure.function.as_function().chunk.code
     }
 
     fn constants(&self) -> &Vec<Value> {
-        &self.closure.function.as_function().unwrap().chunk.constants
+        &self.closure.function.as_function().chunk.constants
     }
 }
 
@@ -350,10 +349,10 @@ impl<'gc> VM<'gc> {
                     frame = self.gc.call_frames.pop().unwrap();
                 }
                 OpCode::Closure => {
-                    let function = frame.next_instruction_as_constant()?.as_object().unwrap();
+                    let function = frame.next_instruction_as_constant()?.as_object();
                     let mut closure = self.gc.track_closure(Closure::new(function));
                     self.gc.stack.push(Value::Object(closure.clone()));
-                    let closure = closure.as_closure_mut().unwrap();
+                    let closure = closure.as_closure_mut();
                     for _ in 0..closure.upvalue_count {
                         let is_local = if frame.next_instruction()? == 1 { true } else { false };
                         let index = frame.next_instruction()? as usize;
@@ -373,7 +372,7 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::GetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
-                    let value = frame.closure.upvalues[slot].as_upvalue().unwrap().get().clone();
+                    let value = frame.closure.upvalues[slot].as_upvalue().get().clone();
                     self.gc.stack.push(value);
                 }
                 OpCode::CloseUpvalue => {
@@ -387,7 +386,7 @@ impl<'gc> VM<'gc> {
     }
 
     fn close_upvalues(&mut self) -> Result<()> {
-        let last = self.gc.stack.last().unwrap().as_upvalue().unwrap();
+        let last = self.gc.stack.last().unwrap().as_upvalue();
         while let Some(mut upvalue) = self.open_upvalues.pop() {
             let upvalue = upvalue.as_upvalue_mut();
             upvalue.closed = Some(upvalue.get().clone());
@@ -406,7 +405,7 @@ impl<'gc> VM<'gc> {
             let local = self.gc.stack.get_mut(local_index).unwrap();
 
             for upvalue in self.open_upvalues.iter().rev() {
-                if std::ptr::eq(upvalue.as_upvalue().unwrap().location, local) {
+                if std::ptr::eq(upvalue.as_upvalue().location, local) {
                     return upvalue.clone();
                 }
             }
@@ -500,7 +499,7 @@ impl<'gc> VM<'gc> {
     }
 
     fn call(&mut self, closure: &Closure, arg_count: usize) -> Result<()> {
-        let function = closure.function.as_function().unwrap();
+        let function = closure.function.as_function();
         if arg_count != function.arity as usize {
             panic!("Expected {} arguments but got {}", function.arity, arg_count);
         }
@@ -531,7 +530,7 @@ mod tests {
     use super::*;
 
     fn run(source: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        use crate::compiler::Compiler;
+        use crate::compiler::compiler::Compiler;
 
         let mut gc = GC::new();
 
@@ -547,9 +546,9 @@ mod tests {
 
     #[test]
     fn vm_raw_instructions() {
-        use crate::chunk::Chunk;
-        use crate::instruction;
-        use crate::value::Value;
+        use crate::compiler::chunk::Chunk;
+        use super::super::instruction;
+        use super::super::value::Value;
 
         let add_constant = |chunk: &mut Chunk, value| {
             let index = chunk.add_constant(Value::Number(value));

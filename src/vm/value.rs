@@ -1,5 +1,5 @@
 use std::fmt;
-use crate::object::{Object, Allocated, Closure, Function, NativeFn, Upvalue};
+use crate::memory::{Object, Allocated, Closure, Function, NativeFn, Upvalue};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -42,35 +42,35 @@ impl Value {
     }
 
     // TODO: Change the error type and return errors.
-    pub fn as_object(&self) -> Result<Allocated<Object>, String> {
-        self.as_object_ref().map(|o| o.clone())
+    pub fn as_object(&self) -> Allocated<Object> {
+        self.as_object_ref().clone()
     }
 
-    pub fn as_object_ref(&self) -> Result<&Allocated<Object>, String> {
+    pub fn as_object_ref(&self) -> &Allocated<Object> {
         match self {
-            Value::Object(object) => Ok(object),
+            Value::Object(object) => object,
             _ => panic!("Expected object"),
         }
     }
 
-    pub fn as_string(&self) -> Result<&String, String> {
-        self.as_object_ref()?.get().data.as_string()
+    pub fn as_string(&self) -> &String {
+        self.as_object_ref().get().data.as_string()
     }
 
-    pub fn as_function(&self) -> Result<&Function, String> {
-        self.as_object_ref()?.get().data.as_function()
+    pub fn as_function(&self) -> &Function {
+        self.as_object_ref().get().data.as_function()
     }
 
-    pub fn as_native(&self) -> Result<&NativeFn, String> {
-        self.as_object_ref()?.get().data.as_native()
+    pub fn as_native(&self) -> &NativeFn {
+        self.as_object_ref().get().data.as_native()
     }
 
-    pub fn as_closure(&self) -> Result<&Closure, String> {
-        self.as_object_ref()?.get().data.as_closure()
+    pub fn as_closure(&self) -> &Closure {
+        self.as_object_ref().get().data.as_closure()
     }
 
-    pub fn as_upvalue(&self) -> Result<&Upvalue, String> {
-        self.as_object_ref()?.get().data.as_upvalue()
+    pub fn as_upvalue(&self) -> &Upvalue {
+        self.as_object_ref().get().data.as_upvalue()
     }
 }
 

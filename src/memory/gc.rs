@@ -1,10 +1,10 @@
 use colored::*;
 use std::collections::HashMap;
 
-use crate::value::Value;
-use crate::object::{Object, Allocated, Traced, Function, NativeFn, Closure, Upvalue};
-use crate::vm::CallFrame;
-use crate::compiler::FunctionState;
+use super::{Allocated, Traced};
+use super::object::{Object, Function, NativeFn, Closure, Upvalue};
+use crate::vm::{vm::CallFrame, value::Value};
+use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
 
 const DEFAULT_NEXT_GC: usize = 1024 * 1024;
@@ -275,10 +275,10 @@ impl GC {
                     self.mark_value(constant.clone());
                 });
             }
-            Object::Closure(ref closure) => {
+            Object::Closure(ref _closure) => {
                 // TODO!
             }
-            Object::Upvalue(ref upvalue) => {
+            Object::Upvalue(ref _upvalue) => {
                 // TODO!
             }
         }

@@ -2,12 +2,9 @@ use thiserror::Error;
 use colored::*;
 
 use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
-use crate::instruction::OpCode;
-use crate::scanner::{Scanner, ScannerError};
-use crate::token::{Token, TokenKind};
-use crate::value::Value;
-use crate::gc::GC;
-use crate::object::{Object, Function};
+use super::{scanner::{Scanner, ScannerError}, token::{Token, TokenKind}};
+use crate::vm::{value::Value, instruction::OpCode};
+use crate::memory::{GC, Function};
 
 #[derive(Debug, Error)]
 pub enum CompileError {
@@ -543,8 +540,8 @@ impl<'s, 'src: 's> Compiler<'src> {
 
         let fun = self.gc.track_function(state.function.clone());
         if LOG_COMPILED_CODE {
-            let name = fun.as_function().unwrap().function_name();
-            debug::disassemble_chunk(&fun.as_function().unwrap().chunk, name);
+            let name = fun.as_function().function_name();
+            debug::disassemble_chunk(&fun.as_function().chunk, name);
         }
         let index = self.add_constant(Value::Object(fun));
         // self.gc.functions.last_mut().unwrap().emit_bytes(OpCode::Constant, index, self.parser.line())?;

@@ -1,6 +1,5 @@
-use crate::chunk::Chunk;
-use crate::instruction::OpCode;
-use crate::value::Value;
+use crate::compiler::chunk::Chunk;
+use crate::vm::{instruction::OpCode, value::Value};
 
 // Set to true if the stack should be shown on each instruction.
 pub const TRACE_EXECUTION_STACK: bool = true;
@@ -102,7 +101,7 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
             let constant = *chunk.code.get(offset).unwrap();
             offset += 1;
             let constant = chunk.constants.get(constant as usize).unwrap();
-            let function = constant.as_function().unwrap();
+            let function = constant.as_function();
 
             let mut text = match constant {
                 Value::Object(object) => format!("[index] {}\t[variable] {:?}", offset-1, object.get()),

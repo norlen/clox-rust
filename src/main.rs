@@ -6,24 +6,14 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-mod chunk;
 mod compiler;
-mod debug;
-mod instruction;
-mod rle;
-mod scanner;
-mod token;
-mod util;
-mod value;
-mod vm;
-mod gc;
-mod object;
-
 mod memory;
+mod vm;
+mod debug;
 
-use compiler::Compiler;
-use vm::VM;
-use gc::GC;
+use compiler::compiler::Compiler;
+use vm::vm::VM;
+use memory::GC;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let file_path = std::env::args().nth(1);

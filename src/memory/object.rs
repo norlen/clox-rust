@@ -1,10 +1,9 @@
-use std::ptr::NonNull;
-use std::ops::{Deref, DerefMut};
 use std::fmt::{self, Debug};
 use colored::*;
 
-use crate::value::Value;
-use crate::chunk::Chunk;
+use super::Allocated;
+use crate::vm::{value::Value};
+use crate::compiler::chunk::Chunk;
 use crate::debug::LOG_OBJECT;
 
 #[derive(Debug, Clone)]
@@ -37,44 +36,44 @@ impl fmt::Display for Object {
 }
 
 impl Object {
-    pub fn as_string(&self) -> Result<&String, String> {
+    pub fn as_string(&self) -> &String {
         match self {
-            Object::String(string) => Ok(string),
+            Object::String(string) => string,
             _ => panic!("Expected string"),
         }
     }
 
-    pub fn as_function(&self) -> Result<&Function, String> {
+    pub fn as_function(&self) -> &Function {
         match self {
-            Object::Function(function) => Ok(function),
+            Object::Function(function) => function,
             _ => panic!("Expected function"),
         }
     }
 
-    pub fn as_native(&self) -> Result<&NativeFn, String> {
+    pub fn as_native(&self) -> &NativeFn {
         match self {
-            Object::Native(native) => Ok(native),
+            Object::Native(native) => native,
             _ => panic!("Expected native function"),
         }
     }
 
-    pub fn as_closure(&self) -> Result<&Closure, String> {
+    pub fn as_closure(&self) -> &Closure {
         match self {
-            Object::Closure(closure) => Ok(closure),
+            Object::Closure(closure) => closure,
             _ => panic!("Expected closure"),
         }
     }
 
-    pub fn as_upvalue(&self) -> Result<&Upvalue, String> {
+    pub fn as_upvalue(&self) -> &Upvalue {
         match self {
-            Object::Upvalue(upvalue) => Ok(upvalue),
+            Object::Upvalue(upvalue) => upvalue,
             _ => panic!("Expected upvalue"),
         }
     }
 
-    pub fn as_closure_mut(&mut self) -> Result<&mut Closure, String> {
+    pub fn as_closure_mut(&mut self) -> &mut Closure {
         match self {
-            Object::Closure(closure) => Ok(closure),
+            Object::Closure(closure) => closure,
             _ => panic!("Expected closure"),
         }
     }
@@ -86,19 +85,6 @@ impl Object {
         }
     }
 }
-
-// pub enum Upvalue2 {
-//     Open(NonNull<Value>),
-//     Closed(Value),
-// }
-
-// impl Upvalue2 {
-//     pub fn new(location: &mut Value) -> Self {
-//         Self::Open(NonNull::new(location).unwrap())
-//     }
-
-//     pub fn set(&)
-// }
 
 #[derive(Debug, Clone)]
 pub struct Upvalue {
@@ -176,7 +162,7 @@ pub struct Closure {
 
 impl Closure {
     pub fn new(function: Allocated<Object>) -> Self {
-        let num_upvalues = function.as_function().unwrap().num_upvalues;
+        let num_upvalues = function.as_function().num_upvalues;
         Self {
             function: function.clone(),
             upvalues: Vec::with_capacity(num_upvalues),
@@ -209,64 +195,5 @@ impl NativeFn {
 impl fmt::Debug for NativeFn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
         write!(f, "NativeFn")
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct Traced<T: Debug> {
-    pub(super) marked: bool,
-    pub data: T,
-}
-
-impl<T: Debug> Traced<T> {
-    pub(super) fn new(data: T) -> Self {
-        Self {
-            marked: false,
-            data,
-        }
-    }
-}
-
-// Holds a pointer to some allocated object. Used by the
-// garbage collector.
-#[derive(Debug, Copy, Clone)]
-pub struct Allocated<T: Debug> {
-    pub ptr: NonNull<Traced<T>>,
-}
-
-impl<T: Debug> Allocated<T> {
-    pub(super) fn new(ptr: &mut Traced<T>) -> Self {
-        if LOG_OBJECT {
-            println!("{}\tAllocated::new() : {:?}", "[OBJECT]".purple(), ptr);
-        }
-        Self {
-            ptr: NonNull::new(ptr).unwrap(),
-        }
-    }
-}
-
-impl<T: Debug> Deref for Allocated<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.get().data
-    }
-}
-
-impl<T: Debug> DerefMut for Allocated<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.get_mut().data
-    }
-}
-
-impl<T: Debug> Allocated<T> {
-    pub fn get(&self) -> &Traced<T> {
-        // Yep!
-        unsafe { self.ptr.as_ref() }
-    }
-
-    pub fn get_mut(&mut self) -> &mut Traced<T> {
-        // Yep again!
-        unsafe { self.ptr.as_mut() }
     }
 }
