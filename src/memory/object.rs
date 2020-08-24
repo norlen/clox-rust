@@ -1,7 +1,7 @@
 use colored::*;
 use std::fmt::{self, Debug};
 
-use super::Gc;
+use super::{Gc, GC};
 use crate::compiler::chunk::Chunk;
 use crate::debug::LOG_OBJECT;
 use crate::vm::value::Value;
@@ -88,28 +88,52 @@ impl Object {
     }
 }
 
+// #[derive(Debug, Clone)]
+// pub struct Upvalue {
+//     pub location: *mut Value,
+//     pub closed: Option<Value>,
+// }
+
+/// Upvalue holds references to a stack variable used in a closure. This allows closures
+/// to close over variables. When those variables are popped off the stack the upvalue
+/// becomes closed and the upvalue owns the Value.
 #[derive(Debug, Clone)]
-pub struct Upvalue {
-    pub location: *mut Value,
-    pub closed: Option<Value>,
+pub enum Upvalue {
+    /// An open upvalue points to the stack.
+    Open(usize),
+
+    /// An upvalue is closed when we have to lift the value off the stack.
+    Closed(Value),
 }
 
 impl Upvalue {
-    pub fn new(location: &mut Value) -> Self {
-        Self {
-            location: location as *mut _,
-            closed: None,
+    pub fn new(local_index: usize) -> Self {
+        Self::Open(local_index)
+    }
+
+    pub fn close(&mut self, value: Value) {
+        *self = Upvalue::Closed(value);
+    }
+
+    pub fn as_open(&self) -> usize {
+        match self {
+            Upvalue::Open(index) => *index,
+            Upvalue::Closed(_) => panic!("Expected open upvalue"),
         }
     }
 
-    pub fn set(&mut self, value: Value) {
-        unsafe {
-            *self.location = value;
+    pub fn set(&mut self, local_index: usize) {
+        match self {
+            Upvalue::Open(index) => *index = local_index,
+            _ => panic!("Expected open upvalue"),
         }
     }
 
-    pub fn get(&self) -> &Value {
-        unsafe { self.location.as_ref().unwrap() }
+    pub fn get(&self, gc: &GC) -> Value {
+        match self {
+            Upvalue::Open(index) => gc.stack.get(*index).unwrap().clone(),
+            Upvalue::Closed(value) => value.clone(),
+        }
     }
 }
 

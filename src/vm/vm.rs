@@ -95,14 +95,12 @@ impl<'gc> VM<'gc> {
                 if TRACE_EXECUTION_INSTR {
                     println!("{}\t{:04}\t{}", "[Instruction]".green(), frame.ip - 1, r.0);
                 }
-                
-                self.print_upvalues(&frame);
             }
 
             match instruction {
                 OpCode::Return => {
                     let result = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
-                    self.close_upvalues()?;
+                    self.close_upvalues(frame.stack_base)?;
 
                     if self.gc.call_frames.len() == 0 {
                         self.gc.stack.pop();
@@ -277,7 +275,6 @@ impl<'gc> VM<'gc> {
                     let mut closure = self.gc.track_closure(Closure::new(function));
                     self.gc.stack.push(closure.clone().into());
                     let closure = closure.as_closure_mut();
-                    println!("{}: {}\t{:?}", "Upvalue count".red(), closure.upvalue_count, closure.upvalues);
                     for _ in 0..closure.upvalue_count {
                         let is_local = if frame.next_instruction()? == 1 {
                             true
@@ -296,87 +293,50 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::SetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
-                    let value = self.gc.stack.last().unwrap().clone();
-                    frame.closure.upvalues[slot].as_upvalue_mut().set(value);
+                    frame.closure.upvalues[slot].as_upvalue_mut().set(self.gc.stack.len() - 1);
                 }
                 OpCode::GetUpvalue => {
-                    self.print_upvalues(&frame);
                     let slot = frame.next_instruction()? as usize;
                     let upvalue = &frame.closure.upvalues[slot];
-                    let value = upvalue.as_upvalue().get().clone();
+                    let value = upvalue.as_upvalue().get(&self.gc);
                     self.gc.stack.push(value);
                 }
                 OpCode::CloseUpvalue => {
-                    self.close_upvalues()?;
+                    self.close_upvalues(self.gc.stack.len() - 1)?;
                     self.gc.stack.pop();
                 }
             }
         }
-        println!("Done");
         Ok(())
     }
 
-    fn print_upvalues(&self, frame: &CallFrame) {
-        println!("{} UPVALUES IN FRAME COUNT: {}", "[GET UPVALUE]".red(), frame.closure.upvalues.len());
-        println!("\t{} {:?}", "[ARR]".red(), frame.closure.upvalues);
-        for upvalue in frame.closure.upvalues.iter() {
-            let u = upvalue.get();
-            let uu = u.as_upvalue();
-            println!("\t| PTR: {:?} | OPEN: {:?} | CLOSED: {:?}", uu.location, unsafe { uu.location.as_ref() }, uu.closed);
-        }
-    }
-
-    fn close_upvalues(&mut self) -> Result<()> {
-        let last = self.gc.stack.last_mut().unwrap();
-        println!("{}\tLAST_PTR: {:?} || OPEN: {:?}", "[CLOSE_UPVALUES]".blue(), last as *mut _, self.open_upvalues);
-        for upvalue in self.open_upvalues.iter() {
-            let up = upvalue.as_upvalue();
-            let up2 = unsafe { up.location.as_ref().unwrap() };
-            println!("   {} -> {:?}    | LOCATION < LAST: {}", "|".blue(), up2, up.location < last as *mut _);
-        }
-
-        loop {
-            if let Some(upvalue) = self.open_upvalues.last_mut() {
-                println!("\t{}: {:?} || -> {}", "FOUND".blue(), upvalue.as_upvalue(), unsafe { upvalue.as_upvalue().location.as_ref().unwrap() });
-                if upvalue.as_upvalue().location < last as *mut _ {
-                    println!("{} BREAK: upvalue.location < last", "[EXIT]".blue());
-                    break;
-                }
-                let upvalue = upvalue.as_upvalue_mut();
-                let loc_value = unsafe {
-                    upvalue.location.as_ref().unwrap().clone()
-                };
-                upvalue.closed = Some(loc_value);
-                upvalue.location = upvalue.closed.as_mut().unwrap() as *mut _;
-                println!("new upvalue: {:?}", upvalue);
-                self.open_upvalues.pop();
-            } else {
-                println!("{} BREAK: end of array", "[EXIT]".blue());
+    fn close_upvalues(&mut self, last_index: usize) -> Result<()> {
+        while let Some(upvalue) = self.open_upvalues.last_mut() {
+            if upvalue.as_upvalue().as_open() < last_index {
                 break;
             }
-        }
 
+            let upvalue = upvalue.as_upvalue_mut();
+            let value = self.gc.stack[upvalue.as_open()].clone();
+            upvalue.close(value);
+            self.open_upvalues.pop();
+        }
         Ok(())
     }
 
     fn capture_upvalue(&mut self, local_index: usize) -> Gc<Object> {
-        println!("{} local_index: {}", "[CAPTURE UPVALUE]".blue(), local_index);
         let upvalue = {
-            let local = self.gc.stack.get_mut(local_index).unwrap();
-
             for upvalue in self.open_upvalues.iter().rev() {
-                if std::ptr::eq(upvalue.as_upvalue().location, local) {
-                    println!("\t{}: returning {:?} || -> {}", "EXISTS".blue(), upvalue.as_upvalue(), unsafe { upvalue.as_upvalue().location.as_ref().unwrap() });
+                if upvalue.as_upvalue().as_open() == local_index {
                     return upvalue.clone();
                 }
             }
 
-            let upvalue = Upvalue::new(local);
+            let upvalue = Upvalue::new(local_index);
             upvalue
         };
         let upvalue = self.gc.track_upvalue(upvalue);
         self.open_upvalues.push(upvalue.clone());
-        println!("\t{}: {:?} || -> {}", "CREATING".blue(), upvalue.as_upvalue(), unsafe { upvalue.as_upvalue().location.as_ref().unwrap() });
         upvalue
     }
 
