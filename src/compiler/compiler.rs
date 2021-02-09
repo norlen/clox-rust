@@ -626,6 +626,11 @@ impl<'s, 'src: 's> Compiler<'src> {
             // We ask the GC to track this new function.
             let new_function = self.gc.track_function(last_state.function.clone());
             
+            // Not sure if it's because I structured it with an array, but we have to keep track of
+            // the compiled functions. We arent't recursing into the constants when marking, so if we
+            // have a function as a constant it wont mark all those roots. Temp fix.
+            self.gc.compiled_fns.push(new_function.clone());
+
             self.add_constant(new_function.into())
         };
 

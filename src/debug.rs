@@ -8,16 +8,16 @@ pub const TRACE_EXECUTION_STACK: bool = true;
 pub const TRACE_EXECUTION_INSTR: bool = true;
 
 // Set to true to trigger the GC when adding any new object.
-pub const STRESS_GC: bool = false;
+pub const STRESS_GC: bool = true;
 
 // Set to true to log the allocations and sweeping in the GC.
 pub const LOG_GC: bool = true;
 
-pub const LOG_COMPILER: bool = false;
+pub const LOG_COMPILER: bool = true;
 
 pub const LOG_COMPILED_CODE: bool = true;
 
-pub const LOG_OBJECT: bool = false;
+pub const LOG_OBJECT: bool = true;
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
     println!("== {} ==", name);

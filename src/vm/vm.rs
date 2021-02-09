@@ -6,14 +6,12 @@ use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upv
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
-    open_upvalues: Vec<Gc<Object>>,
 }
 
 impl<'gc> VM<'gc> {
     pub fn new(gc: &'gc mut GC) -> Self {
         let mut vm = Self {
             gc,
-            open_upvalues: Vec::new(),
         };
 
         vm.define_native("clock".to_owned(), native_clock);
@@ -21,17 +19,24 @@ impl<'gc> VM<'gc> {
     }
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
+        println!("Start interpreting");
         let closure = {
             let tracked_func = self.gc.track_function(func.clone());
             self.gc.stack.push(tracked_func.clone().into());
+
             let closure = Closure::new(tracked_func);
+            let closure: Value = self.gc.track_closure(closure).into();
+
+            // Now we can pop the function off the stack!
             self.gc.stack.pop();
+
+            // And track the closure instead.
+            self.gc.stack.push(closure.clone());
+
             closure
         };
 
         // Put the closure at the beginning of the stack and set up the call frame.
-        let closure: Value = self.gc.track_closure(closure).into();
-        self.gc.stack.push(closure.clone());
         self.call_value(closure, 0)?;
 
         if let Err(err) = self.run() {
@@ -276,28 +281,24 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(closure.clone().into());
                     let closure = closure.as_closure_mut();
                     for _ in 0..closure.upvalue_count {
-                        let is_local = if frame.next_instruction()? == 1 {
-                            true
-                        } else {
-                            false
-                        };
+                        let is_local = frame.next_instruction()? == 1;
                         let index = frame.next_instruction()? as usize;
                         if is_local {
                             let upvalue = self.capture_upvalue(frame.stack_base + index);
                             closure.upvalues.push(upvalue);
                         } else {
-                            let upvalue = frame.closure.upvalues.get(index).unwrap();
+                            let upvalue = frame.closure.as_closure_mut().upvalues.get(index).unwrap();
                             closure.upvalues.push(upvalue.clone());
                         }
                     }
                 }
                 OpCode::SetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
-                    frame.closure.upvalues[slot].as_upvalue_mut().set(self.gc.stack.len() - 1);
+                    frame.closure.as_closure_mut().upvalues[slot].as_upvalue_mut().set(self.gc.stack.len() - 1);
                 }
                 OpCode::GetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
-                    let upvalue = &frame.closure.upvalues[slot];
+                    let upvalue = &frame.closure.as_closure_mut().upvalues[slot];
                     let value = upvalue.as_upvalue().get(&self.gc);
                     self.gc.stack.push(value);
                 }
@@ -311,7 +312,7 @@ impl<'gc> VM<'gc> {
     }
 
     fn close_upvalues(&mut self, last_index: usize) -> Result<()> {
-        while let Some(upvalue) = self.open_upvalues.last_mut() {
+        while let Some(upvalue) = self.gc.open_upvalues.last_mut() {
             if upvalue.as_upvalue().as_open() < last_index {
                 break;
             }
@@ -319,14 +320,14 @@ impl<'gc> VM<'gc> {
             let upvalue = upvalue.as_upvalue_mut();
             let value = self.gc.stack[upvalue.as_open()].clone();
             upvalue.close(value);
-            self.open_upvalues.pop();
+            self.gc.open_upvalues.pop();
         }
         Ok(())
     }
 
     fn capture_upvalue(&mut self, local_index: usize) -> Gc<Object> {
         let upvalue = {
-            for upvalue in self.open_upvalues.iter().rev() {
+            for upvalue in self.gc.open_upvalues.iter().rev() {
                 if upvalue.as_upvalue().as_open() == local_index {
                     return upvalue.clone();
                 }
@@ -336,7 +337,7 @@ impl<'gc> VM<'gc> {
             upvalue
         };
         let upvalue = self.gc.track_upvalue(upvalue);
-        self.open_upvalues.push(upvalue.clone());
+        self.gc.open_upvalues.push(upvalue.clone());
         upvalue
     }
 
@@ -392,15 +393,15 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(result);
                     Ok(())
                 }
-                Object::Closure(closure) => self.call(closure, arg_count),
+                Object::Closure(_) => self.call(object.clone(), arg_count),
                 _ => panic!(),
             },
             _ => Err(VMError::RuntimeError),
         }
     }
 
-    fn call(&mut self, closure: &Closure, arg_count: usize) -> Result<()> {
-        let function = closure.function.as_function();
+    fn call(&mut self, closure: Gc<Object>, arg_count: usize) -> Result<()> {
+        let function = closure.as_closure().function.as_function();
         if arg_count != function.arity as usize {
             panic!(
                 "Expected {} arguments but got {}",
@@ -408,9 +409,7 @@ impl<'gc> VM<'gc> {
             );
         }
 
-        // TODO: Do we have to pass the Gc<Object> to the CallFrame here?
-        // Or can it figure it that the function is a root anyway?
-        let call_frame = CallFrame::new(closure.clone(), self.gc.stack.len() - arg_count - 1);
+        let call_frame = CallFrame::new(closure, self.gc.stack.len() - arg_count - 1);
         self.gc.call_frames.push(call_frame);
 
         if self.gc.call_frames.len() > 255 {

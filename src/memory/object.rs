@@ -59,12 +59,12 @@ impl Object {
     //     }
     // }
 
-    // pub fn as_closure(&self) -> &Closure {
-    //     match self {
-    //         Object::Closure(closure) => closure,
-    //         _ => panic!("Expected closure"),
-    //     }
-    // }
+    pub fn as_closure(&self) -> &Closure {
+        match self {
+            Object::Closure(closure) => closure,
+            _ => panic!("Expected closure"),
+        }
+    }
 
     pub fn as_upvalue(&self) -> &Upvalue {
         match self {

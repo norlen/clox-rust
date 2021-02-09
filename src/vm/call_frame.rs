@@ -1,15 +1,15 @@
 use super::{value::Value, Result, VMError};
-use crate::memory::{Closure, Function};
+use crate::memory::{Function, Gc, Object};
 
 #[derive(Clone)]
 pub struct CallFrame {
-    pub(super) closure: Closure,
+    pub closure: Gc<Object>,
     pub(super) ip: usize,
     pub(super) stack_base: usize,
 }
 
 impl CallFrame {
-    pub(super) fn new(closure: Closure, stack_base: usize) -> Self {
+    pub(super) fn new(closure: Gc<Object>, stack_base: usize) -> Self {
         Self {
             closure,
             ip: 0,
@@ -19,7 +19,7 @@ impl CallFrame {
 
     pub(super) fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.closure
+        self.closure.as_closure_mut()
             .function
             .as_function()
             .chunk
@@ -41,14 +41,14 @@ impl CallFrame {
     }
 
     pub(super) fn function(&self) -> &Function {
-        self.closure.function.as_function()
+        self.closure.as_closure().function.as_function()
     }
 
     pub(super) fn code(&self) -> &Vec<u8> {
-        &self.closure.function.as_function().chunk.code
+        &self.closure.as_closure().function.as_function().chunk.code
     }
 
     pub(super) fn constants(&self) -> &Vec<Value> {
-        &self.closure.function.as_function().chunk.constants
+        &self.closure.as_closure().function.as_function().chunk.constants
     }
 }

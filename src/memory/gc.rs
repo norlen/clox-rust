@@ -1,5 +1,5 @@
 use colored::*;
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 use super::object::{Closure, Function, NativeFn, Object, Upvalue};
 use super::{Gc, Traced};
@@ -15,6 +15,9 @@ const HEAP_GROW_FACTOR: usize = 2;
 /// Uses a tri-color abstracton. Objects start out as white, everything in the stack, globals etc are then marked
 /// as gray. Then all the objects reachable by those are found, the already processed objects become black. Afterwards
 /// it proceeds with sweeping all objects still left as white.
+///
+/// Currently it is a bit messy, as the GC "owns" all these arrays and maps used by the compiler and VM. This should be
+/// fixed later, but getting it to work first and foremost.
 pub struct GC {
     /// All values on the stack, used by the VM.
     pub stack: Vec<Value>,
@@ -27,6 +30,11 @@ pub struct GC {
 
     /// Functions currently being compiled.
     pub functions: Vec<FunctionState>,
+
+    pub compiled_fns: Vec<Gc<Object>>,
+
+    /// Open upvalues used by the VM.
+    pub open_upvalues: Vec<Gc<Object>>,
 
     /// All objects tracked by the GC, excluding strings.
     objects: Vec<Box<Traced<Object>>>,
@@ -55,6 +63,8 @@ impl GC {
             globals: HashMap::new(),
             call_frames: Vec::new(),
             functions: Vec::new(),
+            compiled_fns: Vec::new(),
+            open_upvalues: Vec::new(),
             bytes_allocated: 0,
             next_gc: DEFAULT_NEXT_GC,
         }
@@ -88,6 +98,7 @@ impl GC {
         Gc::new(object)
     }
 
+    /// Adds a closure to the garbage collector.
     pub fn track_closure(&mut self, closure: Closure) -> Gc<Object> {
         self.on_track(std::mem::size_of::<Closure>());
         self.objects
@@ -96,6 +107,7 @@ impl GC {
         Gc::new(object)
     }
 
+    /// Adds an upvalue to the garbage collector.
     pub fn track_upvalue(&mut self, upvalue: Upvalue) -> Gc<Object> {
         self.on_track(std::mem::size_of::<Upvalue>());
         self.objects
@@ -158,14 +170,10 @@ impl GC {
         stack_objects
             .iter()
             .for_each(|o| self.mark_object(o.clone()));
-        // self.mark_objects(&mut stack_objects.iter_mut());
 
         // Mark globals.
         let mut global_objects = Vec::new();
         self.globals.iter().for_each(|(_k, v)| {
-            // if let Some(obj) = filter_objects(k) {
-            //     global_objects.push(obj);
-            // }
             if let Some(obj) = filter_objects(v) {
                 global_objects.push(obj);
             }
@@ -175,12 +183,36 @@ impl GC {
         // Mark compiler roots.
         // Since the function being compiled isn't tracked yet by the GC
         // we have to go inside and mark the constantly directly.
-        let compiler_objects: Vec<Gc<Object>> = self
+        println!("||GC|| COMPILER ROOTS: NUM FUNCTIONS: {}", self.functions.len());
+        for f in self.functions.iter() {
+            println!("FUNCTION {:?}", f);
+        }
+        let fn_names: Vec<_> = self.functions.iter().filter_map(|f| f.function.name.clone()).collect();
+        self.mark_objects(fn_names.into_iter());
+
+        let compiler_objects: Vec<_> = self
             .functions
             .iter()
             .flat_map(|f| f.function.chunk.constants.iter().filter_map(filter_objects))
             .collect();
         self.mark_objects(compiler_objects.into_iter());
+
+        println!("||GC|| COMPILER ROOTS: NUM COMPILED FUNCTIONS: {}", self.compiled_fns.len());
+        self.mark_objects(self.compiled_fns.clone().into_iter());
+
+        // let compiler_functions: Vec<_> = self.functions.iter().map(|f| f.function.clone()).collect();
+        // self.mark_objects(compiler_functions.into_iter());
+
+        // Mark closures in the call frames.
+        let closure_objects: Vec<_> = self
+            .call_frames
+            .iter()
+            .map(|cf| cf.closure.clone())
+            .collect();
+        self.mark_objects(closure_objects.into_iter());
+
+        // Mark open upvalues.
+        self.mark_objects(self.open_upvalues.clone().into_iter());
     }
 
     /// Traces all references that the objects in the gray list has. Goes through
@@ -242,8 +274,9 @@ impl GC {
             if !self.objects.get(i).unwrap().marked() {
                 if LOG_GC {
                     println!(
-                        "{}\t\t[Sweep object] {:?}",
+                        "{}\t\t[Sweep object] {} [{:?}]",
                         "[GC]".cyan(),
+                        self.objects.get(i).unwrap().data,
                         self.objects.get(i).unwrap().data
                     );
                 }
@@ -273,10 +306,10 @@ impl GC {
         if !object.marked() {
             if LOG_GC {
                 println!(
-                    "{}\t\tMarking: [{:?}] {:?}",
+                    "{}\t\tMarking: {} [{:?}]",
                     "[GC]".cyan(),
-                    object,
-                    object.get()
+                    object.get(),
+                    object
                 );
             }
             object.mark();
@@ -294,10 +327,10 @@ impl GC {
     fn blacken(&mut self, object: Gc<Object>) {
         if LOG_GC {
             println!(
-                "{}\t\tBlacken: [{:?}] {:?}",
+                "{}\t\tBlacken: {} [{:?}]",
                 "[GC]".cyan(),
-                object,
-                object.get()
+                object.get(),
+                object
             );
         }
         match object.get() {
@@ -313,11 +346,15 @@ impl GC {
                     self.mark_value(constant.clone());
                 });
             }
-            Object::Closure(ref _closure) => {
-                // TODO!
+            Object::Closure(ref closure) => {
+                self.mark_object(closure.function.clone());
+                self.mark_objects(closure.upvalues.clone().into_iter());
             }
-            Object::Upvalue(ref _upvalue) => {
-                // TODO!
+            Object::Upvalue(ref upvalue) => {
+                match upvalue {
+                    Upvalue::Closed(closed) => self.mark_value(closed.clone()),
+                    Upvalue::Open(_) => {}, // No nothing.
+                }
             }
         }
     }
