@@ -1,7 +1,7 @@
 use colored::*;
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
-use super::object::{Closure, Function, NativeFn, Object, Upvalue};
+use super::object::{Class, Closure, Function, NativeFn, Object, Upvalue};
 use super::{Gc, Traced};
 use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
@@ -183,11 +183,18 @@ impl GC {
         // Mark compiler roots.
         // Since the function being compiled isn't tracked yet by the GC
         // we have to go inside and mark the constantly directly.
-        println!("||GC|| COMPILER ROOTS: NUM FUNCTIONS: {}", self.functions.len());
+        println!(
+            "||GC|| COMPILER ROOTS: NUM FUNCTIONS: {}",
+            self.functions.len()
+        );
         for f in self.functions.iter() {
             println!("FUNCTION {:?}", f);
         }
-        let fn_names: Vec<_> = self.functions.iter().filter_map(|f| f.function.name.clone()).collect();
+        let fn_names: Vec<_> = self
+            .functions
+            .iter()
+            .filter_map(|f| f.function.name.clone())
+            .collect();
         self.mark_objects(fn_names.into_iter());
 
         let compiler_objects: Vec<_> = self
@@ -197,7 +204,10 @@ impl GC {
             .collect();
         self.mark_objects(compiler_objects.into_iter());
 
-        println!("||GC|| COMPILER ROOTS: NUM COMPILED FUNCTIONS: {}", self.compiled_fns.len());
+        println!(
+            "||GC|| COMPILER ROOTS: NUM COMPILED FUNCTIONS: {}",
+            self.compiled_fns.len()
+        );
         self.mark_objects(self.compiled_fns.clone().into_iter());
 
         // let compiler_functions: Vec<_> = self.functions.iter().map(|f| f.function.clone()).collect();
@@ -286,7 +296,8 @@ impl GC {
                     Object::Native(_) => std::mem::size_of::<NativeFn>(),
                     Object::Closure(_) => std::mem::size_of::<Closure>(),
                     Object::Upvalue(_) => std::mem::size_of::<Upvalue>(),
-                    Object::String(_) => panic!("Should never enouncter a string here"),
+                    Object::Class(_) => std::mem::size_of::<Class>(),
+                    Object::String(_) => panic!("Should never encounter a string here"),
                 };
                 self.on_sweep(size);
             // Don't increment i as we swap the last element to this location.
@@ -353,8 +364,11 @@ impl GC {
             Object::Upvalue(ref upvalue) => {
                 match upvalue {
                     Upvalue::Closed(closed) => self.mark_value(closed.clone()),
-                    Upvalue::Open(_) => {}, // No nothing.
+                    Upvalue::Open(_) => {} // No nothing.
                 }
+            }
+            Object::Class(ref class) => {
+                self.mark_object(class.name.clone());
             }
         }
     }
