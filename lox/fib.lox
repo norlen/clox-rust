@@ -17,12 +17,18 @@ fun fib_i(n) {
     return b;
 }
 
-print "fib recursive:";
+print "fib recursive fib(30):";
 var start = clock();
-print fib_r(35);
+print "result:";
+print fib_r(30);
+print "time taken:";
 print clock() - start;
 
-print "fib iter:";
+print "";
+
+print "fib iter fib(50):";
 start = clock();
-print fib_i(35);
+print "result:";
+print fib_i(50);
+print "time taken:";
 print clock() - start;
