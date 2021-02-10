@@ -191,13 +191,6 @@ impl GC {
         // Mark compiler roots.
         // Since the function being compiled isn't tracked yet by the GC
         // we have to go inside and mark the constantly directly.
-        println!(
-            "||GC|| COMPILER ROOTS: NUM FUNCTIONS: {}",
-            self.functions.len()
-        );
-        for f in self.functions.iter() {
-            println!("FUNCTION {:?}", f);
-        }
         let fn_names: Vec<_> = self
             .functions
             .iter()
@@ -212,10 +205,6 @@ impl GC {
             .collect();
         self.mark_objects(compiler_objects.into_iter());
 
-        println!(
-            "||GC|| COMPILER ROOTS: NUM COMPILED FUNCTIONS: {}",
-            self.compiled_fns.len()
-        );
         self.mark_objects(self.compiled_fns.clone().into_iter());
 
         // let compiler_functions: Vec<_> = self.functions.iter().map(|f| f.function.clone()).collect();

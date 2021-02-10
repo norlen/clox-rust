@@ -19,7 +19,6 @@ impl<'gc> VM<'gc> {
     }
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
-        println!("Start interpreting");
         let closure = {
             let tracked_func = self.gc.track_function(func.clone());
             self.gc.stack.push(tracked_func.clone().into());

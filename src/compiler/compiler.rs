@@ -640,16 +640,10 @@ impl<'s, 'src: 's> Compiler<'src> {
 
         state.emit_bytes(OpCode::Closure, index, line)?;
 
-        println!("{}\tchecking for upvalues:", "[UPVALUE]".red());
-        println!("CURRENT FUNC: {}", state.function.function_name());
-        println!("{}\t{:?}", "[UPVALUE]".red(), state.upvalues);
-        println!("PREVIOUS UPVALUE COUNT: {}", last_state.function.num_upvalues);
-        println!("LAST UPVALUES: {:?}", last_state.upvalues);
         for upvalue in last_state.upvalues.iter() {
             let is_local = if upvalue.is_local { 1 } else { 0 };
             state.emit_raw(is_local, line)?;
             state.emit_raw(upvalue.index, line)?;
-            println!("{}\tJust emitted: {} {}", "[UPVALUE]".red(), is_local, upvalue.index);
         }
 
         Ok(())
@@ -932,11 +926,9 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn scope_leave(&mut self) -> Result<()> {
-        println!("Leaving scope");
         let mut fun = self.gc.functions.last_mut().unwrap();
         fun.scope_depth -= 1;
         while let Some(local) = fun.locals.last() {
-            println!("\tLOCAL: {:?}", local);
             if local.depth <= fun.scope_depth {
                 break;
             }
