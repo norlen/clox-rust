@@ -656,7 +656,9 @@ impl<'s, 'src: 's> Compiler<'src> {
     }
 
     fn declaration(&mut self) -> Result<()> {
-        if self.match_token(TokenKind::Fun)? {
+        if self.match_token(TokenKind::Class)? {
+            self.class_declaration()?;
+        } else if self.match_token(TokenKind::Fun)? {
             self.fun_declaration()?;
         } else if self.match_token(TokenKind::Var)? {
             self.var_declaration()?;
@@ -664,6 +666,22 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.statement()?;
         }
         Ok(())
+    }
+
+    fn class_declaration(&mut self) -> Result<()> {
+        self.consume(TokenKind::Identifier, "Expect class name")?;
+        let name_constant = self.identifier_constant(self.parser.previous()?.data.clone());
+        self.declare_variable()?;
+
+        self.gc
+                .functions
+                .last_mut()
+                .unwrap()
+                .emit_bytes(OpCode::Class, name_constant, self.parser.line())?;
+        self.define_variable(name_constant)?;
+
+        self.consume(TokenKind::BraceLeft, "Expect '{' before class body")?;
+        self.consume(TokenKind::BraceRight, "Expect '}' after class body")
     }
 
     fn fun_declaration(&mut self) -> Result<()> {
@@ -1547,6 +1565,15 @@ mod tests {
             }
             var closure = makeClosure();
             closure();
+        "#;
+        assert!(compile(source).is_ok());
+    }
+
+    #[test]
+    fn compile_class_declarations() {
+        let source = r#"
+            class Brioche {}
+            print Brioche;
         "#;
         assert!(compile(source).is_ok());
     }

@@ -116,6 +116,14 @@ impl GC {
         Gc::new(object)
     }
 
+    /// Adds a class to the garbage collector.
+    pub fn track_class(&mut self, class: Class) -> Gc<Object> {
+        self.on_track(std::mem::size_of::<Class>());
+        self.objects.push(Box::new(Traced::new(Object::Class(class))));
+        let object = self.objects.last_mut().unwrap();
+        Gc::new(object)
+    }
+
     fn on_track(&mut self, allocated: usize) {
         if STRESS_GC {
             self.collect();

@@ -7,7 +7,7 @@ pub struct Class {
 }
 
 impl Class {
-    fn new(name: Gc<Object>) -> Self {
+    pub fn new(name: Gc<Object>) -> Self {
         Class {
             name,
         }

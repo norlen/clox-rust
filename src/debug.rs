@@ -91,9 +91,11 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         | OpCode::Print
         | OpCode::CloseUpvalue
         | OpCode::Pop => ("".to_owned(), 1),
-        OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal => {
-            (constant_instruction(), 2)
-        }
+        OpCode::Class
+        | OpCode::Constant
+        | OpCode::DefineGlobal
+        | OpCode::GetGlobal
+        | OpCode::SetGlobal => (constant_instruction(), 2),
         OpCode::GetLocal
         | OpCode::SetLocal
         | OpCode::GetUpvalue

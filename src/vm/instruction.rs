@@ -32,6 +32,7 @@ pub enum OpCode {
     GetUpvalue,
     SetUpvalue,
     CloseUpvalue,
+    Class,
 }
 
 impl Into<u8> for OpCode {
@@ -84,6 +85,7 @@ impl OpCode {
             OpCode::GetUpvalue => "GetUpvalue",
             OpCode::SetUpvalue => "SetUpvalue",
             OpCode::CloseUpvalue => "CloseUpvalue",
+            OpCode::Class => "Class",
         }
     }
 }

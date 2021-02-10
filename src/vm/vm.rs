@@ -2,7 +2,7 @@ use colored::*;
 
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upvalue, GC};
+use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upvalue, GC, Class};
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
@@ -305,6 +305,11 @@ impl<'gc> VM<'gc> {
                 OpCode::CloseUpvalue => {
                     self.close_upvalues(self.gc.stack.len() - 1)?;
                     self.gc.stack.pop();
+                }
+                OpCode::Class => {
+                    let name = frame.next_instruction_as_constant()?.as_object();
+                    let class = self.gc.track_class(Class::new(name));
+                    self.gc.stack.push(class.into());
                 }
             }
         }
@@ -787,7 +792,7 @@ mod tests {
         "#;
         assert!(run(source).is_ok());
     }
-
+    
     #[test]
     fn vm_closure5() {
         let source = r#"
@@ -803,6 +808,15 @@ mod tests {
           var closure = outer();
           closure();
           "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_class_declaration() {
+        let source = r#"
+            class Brioche {}
+            print Brioche;
+        "#;
         assert!(run(source).is_ok());
     }
 }
