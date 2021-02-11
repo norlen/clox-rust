@@ -495,13 +495,17 @@ impl<'s, 'src: 's> Compiler<'src> {
 
         // We want to skip over checking for locals in the current function state.
         if let Some(prev_state) = self.gc.functions.get_mut(prev_index) {
-
             // See if the previous state has a local variable we want to capture.
             if let Some(local_idx) = prev_state.resolve_local(token)? {
                 prev_state.locals[local_idx as usize].is_captured = true;
 
                 // Get the upvalue index.
-                let upvalue_idx = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(local_idx, true)?;
+                let upvalue_idx = self
+                    .gc
+                    .functions
+                    .get_mut(state_index)
+                    .unwrap()
+                    .add_upvalue(local_idx, true)?;
                 if LOG_COMPILER {
                     println!("[UPVALUE] is_local: {} index: {}", true, upvalue_idx);
                 }
@@ -509,13 +513,17 @@ impl<'s, 'src: 's> Compiler<'src> {
             } else {
                 // If we couldn't find a local variable, we search recursively.
                 if let Some(upvalue_idx) = self.resolve_upvalue(state_index - 1, token)? {
-                    let upvalue_idx = self.gc.functions.get_mut(state_index).unwrap().add_upvalue(upvalue_idx, false)?;
+                    let upvalue_idx = self
+                        .gc
+                        .functions
+                        .get_mut(state_index)
+                        .unwrap()
+                        .add_upvalue(upvalue_idx, false)?;
                     if LOG_COMPILER {
                         println!("[UPVALUE] is_local: {} index: {}", false, upvalue_idx);
                     }
                     return Ok(Some(upvalue_idx));
                 }
-
             }
         }
 
@@ -625,7 +633,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         let index = {
             // We ask the GC to track this new function.
             let new_function = self.gc.track_function(last_state.function.clone());
-            
+
             // Not sure if it's because I structured it with an array, but we have to keep track of
             // the compiled functions. We arent't recursing into the constants when marking, so if we
             // have a function as a constant it wont mark all those roots. Temp fix.
@@ -667,11 +675,11 @@ impl<'s, 'src: 's> Compiler<'src> {
         let name_constant = self.identifier_constant(self.parser.previous()?.data.clone());
         self.declare_variable()?;
 
-        self.gc
-                .functions
-                .last_mut()
-                .unwrap()
-                .emit_bytes(OpCode::Class, name_constant, self.parser.line())?;
+        self.gc.functions.last_mut().unwrap().emit_bytes(
+            OpCode::Class,
+            name_constant,
+            self.parser.line(),
+        )?;
         self.define_variable(name_constant)?;
 
         self.consume(TokenKind::BraceLeft, "Expect '{' before class body")?;
@@ -1102,7 +1110,11 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     // Helper to emit bytes to the currently compiling function.
     fn emit_bytes(&mut self, op_code: OpCode, index: u8) -> Result<()> {
-        self.gc.functions.last_mut().unwrap().emit_bytes(op_code, index, self.parser.line())
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_bytes(op_code, index, self.parser.line())
     }
 
     fn argument_list(&mut self) -> Result<u8> {

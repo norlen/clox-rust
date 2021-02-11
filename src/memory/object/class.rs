@@ -8,8 +8,6 @@ pub struct Class {
 
 impl Class {
     pub fn new(name: Gc<Object>) -> Self {
-        Class {
-            name,
-        }
+        Class { name }
     }
 }

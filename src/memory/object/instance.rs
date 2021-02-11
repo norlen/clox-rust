@@ -1,6 +1,6 @@
-use super::{Object, Gc};
-use std::collections::HashMap;
+use super::{Gc, Object};
 use crate::vm::value::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Instance {

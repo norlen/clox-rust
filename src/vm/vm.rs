@@ -2,7 +2,9 @@ use colored::*;
 
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upvalue, GC, Class, Instance};
+use crate::memory::{
+    Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Object, Upvalue, GC,
+};
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
@@ -10,9 +12,7 @@ pub struct VM<'gc> {
 
 impl<'gc> VM<'gc> {
     pub fn new(gc: &'gc mut GC) -> Self {
-        let mut vm = Self {
-            gc,
-        };
+        let mut vm = Self { gc };
 
         vm.define_native("clock".to_owned(), native_clock);
         vm
@@ -286,14 +286,17 @@ impl<'gc> VM<'gc> {
                             let upvalue = self.capture_upvalue(frame.stack_base + index);
                             closure.upvalues.push(upvalue);
                         } else {
-                            let upvalue = frame.closure.as_closure_mut().upvalues.get(index).unwrap();
+                            let upvalue =
+                                frame.closure.as_closure_mut().upvalues.get(index).unwrap();
                             closure.upvalues.push(upvalue.clone());
                         }
                     }
                 }
                 OpCode::SetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
-                    frame.closure.as_closure_mut().upvalues[slot].as_upvalue_mut().set(self.gc.stack.len() - 1);
+                    frame.closure.as_closure_mut().upvalues[slot]
+                        .as_upvalue_mut()
+                        .set(self.gc.stack.len() - 1);
                 }
                 OpCode::GetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
@@ -311,30 +314,57 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(class.into());
                 }
                 OpCode::GetProperty => {
-                    let value = {
-                        // Make sure we're actually accessing a class instance, and not something else.
-                        // And don't pop to make sure it is not garbage collected!
-                        let instance = match self.gc.stack.last().ok_or(VMError::RuntimeError2("Only instances have properties"))? {
-                            Value::Object(o) => match o.get() {
-                                Object::Instance(i) => i,
-                                _ => return Err(VMError::RuntimeError2("Only instances have properties")),
-                            }
-                            _ => return Err(VMError::RuntimeError2("Only instances have properties")),
+                    let value =
+                        {
+                            // Make sure we're actually accessing a class instance, and not something else.
+                            // And don't pop to make sure it is not garbage collected!
+                            let instance =
+                                match self.gc.stack.last().ok_or(VMError::RuntimeError2(
+                                    "Only instances have properties",
+                                ))? {
+                                    Value::Object(o) => match o.get() {
+                                        Object::Instance(i) => i,
+                                        _ => {
+                                            return Err(VMError::RuntimeError2(
+                                                "Only instances have properties",
+                                            ))
+                                        }
+                                    },
+                                    _ => {
+                                        return Err(VMError::RuntimeError2(
+                                            "Only instances have properties",
+                                        ))
+                                    }
+                                };
+                            let field = frame.next_instruction_as_constant()?.as_object();
+
+                            instance
+                                .fields
+                                .get(field.as_string())
+                                .ok_or(VMError::RuntimeError2("Undefined property"))?
+                                .clone()
                         };
-                        let field = frame.next_instruction_as_constant()?.as_object();
-    
-                        instance.fields.get(field.as_string()).ok_or(VMError::RuntimeError2("Undefined property"))?.clone()
-                    };
                     self.gc.stack.pop(); // Pop instance off the stack.
                     self.gc.stack.push(value.clone());
                 }
                 OpCode::SetProperty => {
-                    let mut instance = self.gc.stack.get(self.gc.stack.len() - 2).ok_or(VMError::RuntimeError2("Only instances have properties"))?.as_object();
+                    let mut instance = self
+                        .gc
+                        .stack
+                        .get(self.gc.stack.len() - 2)
+                        .ok_or(VMError::RuntimeError2("Only instances have properties"))?
+                        .as_object();
                     let instance = instance.as_instance_mut();
                     let field = frame.next_instruction_as_constant()?.as_object();
 
-                    let value = self.gc.stack.last().ok_or(VMError::RuntimeError2("No value on stack"))?;
-                    instance.fields.insert(field.as_string().clone(), value.clone());
+                    let value = self
+                        .gc
+                        .stack
+                        .last()
+                        .ok_or(VMError::RuntimeError2("No value on stack"))?;
+                    instance
+                        .fields
+                        .insert(field.as_string().clone(), value.clone());
 
                     let value = self.gc.stack.pop().unwrap();
                     self.gc.stack.pop(); // Pop instance.
@@ -827,7 +857,7 @@ mod tests {
         "#;
         assert!(run(source).is_ok());
     }
-    
+
     #[test]
     fn vm_closure5() {
         let source = r#"

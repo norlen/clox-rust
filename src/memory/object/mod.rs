@@ -7,16 +7,16 @@ use crate::debug::LOG_OBJECT;
 mod class;
 mod closure;
 mod function;
+mod instance;
 mod native_fn;
 mod upvalue;
-mod instance;
 
 pub use class::Class;
 pub use closure::Closure;
 pub use function::Function;
-pub use upvalue::Upvalue;
-pub use native_fn::{NativeFn, NativeFunction};
 pub use instance::Instance;
+pub use native_fn::{NativeFn, NativeFunction};
+pub use upvalue::Upvalue;
 
 #[derive(Debug, Clone)]
 pub enum Object {
@@ -48,7 +48,9 @@ impl fmt::Display for Object {
             }
             Object::Upvalue(_v) => write!(f, "upvalue"),
             Object::Class(v) => write!(f, "<class {}>", v.name.as_string()),
-            Object::Instance(v) => write!(f, "<instance of {}>", v.class.as_class().name.as_string()),
+            Object::Instance(v) => {
+                write!(f, "<instance of {}>", v.class.as_class().name.as_string())
+            }
         }
     }
 }
@@ -124,6 +126,3 @@ impl Object {
         }
     }
 }
-
-
-
