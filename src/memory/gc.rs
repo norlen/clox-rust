@@ -1,7 +1,7 @@
 use colored::*;
 use std::collections::HashMap;
 
-use super::object::{Class, Closure, Function, NativeFn, Object, Upvalue};
+use super::object::{Class, Closure, Function, NativeFn, Object, Upvalue, Instance};
 use super::{Gc, Traced};
 use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
@@ -124,6 +124,14 @@ impl GC {
         Gc::new(object)
     }
 
+    /// Adds a class instance to the garbage collector.
+    pub fn track_instance(&mut self, instance: Instance) -> Gc<Object> {
+        self.on_track(std::mem::size_of::<Instance>());
+        self.objects.push(Box::new(Traced::new(Object::Instance(instance))));
+        let object = self.objects.last_mut().unwrap();
+        Gc::new(object)
+    }
+
     fn on_track(&mut self, allocated: usize) {
         if STRESS_GC {
             self.collect();
@@ -198,6 +206,7 @@ impl GC {
             .collect();
         self.mark_objects(fn_names.into_iter());
 
+        // Mark currently compiling functions in compiler.
         let compiler_objects: Vec<_> = self
             .functions
             .iter()
@@ -205,10 +214,8 @@ impl GC {
             .collect();
         self.mark_objects(compiler_objects.into_iter());
 
+        // Mark already compiled functions in compiler.
         self.mark_objects(self.compiled_fns.clone().into_iter());
-
-        // let compiler_functions: Vec<_> = self.functions.iter().map(|f| f.function.clone()).collect();
-        // self.mark_objects(compiler_functions.into_iter());
 
         // Mark closures in the call frames.
         let closure_objects: Vec<_> = self
@@ -294,6 +301,7 @@ impl GC {
                     Object::Closure(_) => std::mem::size_of::<Closure>(),
                     Object::Upvalue(_) => std::mem::size_of::<Upvalue>(),
                     Object::Class(_) => std::mem::size_of::<Class>(),
+                    Object::Instance(_) => std::mem::size_of::<Instance>(),
                     Object::String(_) => panic!("Should never encounter a string here"),
                 };
                 self.on_sweep(size);
@@ -366,6 +374,14 @@ impl GC {
             }
             Object::Class(ref class) => {
                 self.mark_object(class.name.clone());
+            }
+            Object::Instance(ref instance) => {
+                self.mark_object(instance.class.clone());
+                let objects: Vec<_> = instance.fields.iter().filter_map(|(_k, v)| match v {
+                    Value::Object(o) => Some(o.clone()),
+                    _ => None,
+                }).collect();
+                self.mark_objects(objects.into_iter());
             }
         }
     }

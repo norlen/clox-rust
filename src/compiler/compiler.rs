@@ -176,9 +176,9 @@ impl FunctionState {
         Ok(self.function.chunk.code.len() - 2)
     }
 
-    /// Emits the loop instruction to jump backwards to `loop_start`. `loop_start` cannot contain
-    /// a value higher than `std::u16::MAX` as jumps further than that are not supported yet.
-    /// The functions emits `OpCode::Loop` instruction followed by first 16 bits in `loop_start`.
+    // Emits the loop instruction to jump backwards to `loop_start`. `loop_start` cannot contain
+    // a value higher than `std::u16::MAX` as jumps further than that are not supported yet.
+    // The functions emits `OpCode::Loop` instruction followed by first 16 bits in `loop_start`.
     fn emit_loop(&mut self, loop_start: usize, line: u64) -> Result<()> {
         self.emit_byte(OpCode::Loop, line)?;
 
@@ -997,6 +997,20 @@ impl<'s, 'src: 's> Compiler<'src> {
         )
     }
 
+    // Dot operator, i.e. when properties (fields or methods) are accessed from class instances.
+    fn dot(&mut self, can_assign: bool) -> Result<()> {
+        self.consume(TokenKind::Identifier, "Expect property name after '.'.")?;
+        let name = self.identifier_constant(self.parser.previous()?.data.clone());
+
+        if can_assign && self.match_token(TokenKind::Equal)? {
+            self.expression();
+            self.emit_bytes(OpCode::SetProperty, name);
+        } else {
+            self.emit_bytes(OpCode::GetProperty, name);
+        }
+        Ok(())
+    }
+
     fn string(&mut self, _can_assign: bool) -> Result<()> {
         let src_str = self.parser.previous()?.data.clone();
         // Skip " at beginning and end.
@@ -1032,7 +1046,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         }
     }
 
-    fn and(&mut self) -> Result<()> {
+    fn and(&mut self, _can_assign: bool) -> Result<()> {
         let end_jump = self
             .gc
             .functions
@@ -1048,7 +1062,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.gc.functions.last_mut().unwrap().patch_jump(end_jump)
     }
 
-    fn or(&mut self) -> Result<()> {
+    fn or(&mut self, _can_assign: bool) -> Result<()> {
         let else_jump = self
             .gc
             .functions
@@ -1077,13 +1091,18 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.gc.functions.last_mut().unwrap().patch_jump(end_jump)
     }
 
-    fn call(&mut self) -> Result<()> {
+    fn call(&mut self, _can_assign: bool) -> Result<()> {
         let arg_count = self.argument_list()?;
         self.gc.functions.last_mut().unwrap().emit_bytes(
             OpCode::Call,
             arg_count,
             self.parser.line(),
         )
+    }
+
+    // Helper to emit bytes to the currently compiling function.
+    fn emit_bytes(&mut self, op_code: OpCode, index: u8) -> Result<()> {
+        self.gc.functions.last_mut().unwrap().emit_bytes(op_code, index, self.parser.line())
     }
 
     fn argument_list(&mut self) -> Result<u8> {
@@ -1104,7 +1123,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         Ok(arg_count as u8)
     }
 
-    fn binary(&mut self) -> Result<()> {
+    fn binary(&mut self, _can_assign: bool) -> Result<()> {
         let operator_type = self.parser.previous()?.kind;
 
         // Compile the right operand.
@@ -1259,7 +1278,7 @@ impl<'s, 'src: 's> Compiler<'src> {
                 .ok_or(CompileError::ParseRuleNotFound)?
                 .infix
                 .ok_or(CompileError::ParseRuleNotFound)?;
-            infix_rule(self)?;
+            infix_rule(self, can_assign)?;
         }
 
         if can_assign && self.match_token(TokenKind::Equal)? {
@@ -1276,7 +1295,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // BraceLeft
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // BraceRight
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Comma
-        ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Dot
+        ParseRule { prefix: None                    , infix: Some(Compiler::dot)    , precedence: Precedence::Call        }, // Dot
         ParseRule { prefix: Some(Compiler::unary)   , infix: Some(Compiler::binary) , precedence: Precedence::Term        }, // Minus
         ParseRule { prefix: None                    , infix: Some(Compiler::binary) , precedence: Precedence::Term        }, // Plus
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Semicolon
@@ -1314,7 +1333,7 @@ impl<'s, 'src: 's> Compiler<'src> {
 }
 
 type PrefixFunction<'r, 's> = fn(&'r mut Compiler<'s>, bool) -> Result<()>;
-type InfixFunction<'r, 's> = fn(&'r mut Compiler<'s>) -> Result<()>;
+type InfixFunction<'r, 's> = fn(&'r mut Compiler<'s>, bool) -> Result<()>;
 
 #[derive(Debug)]
 struct ParseRule<'r, 's> {

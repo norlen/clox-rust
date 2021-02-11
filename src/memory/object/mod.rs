@@ -9,12 +9,14 @@ mod closure;
 mod function;
 mod native_fn;
 mod upvalue;
+mod instance;
 
 pub use class::Class;
 pub use closure::Closure;
 pub use function::Function;
 pub use upvalue::Upvalue;
 pub use native_fn::{NativeFn, NativeFunction};
+pub use instance::Instance;
 
 #[derive(Debug, Clone)]
 pub enum Object {
@@ -24,6 +26,7 @@ pub enum Object {
     Closure(Closure),
     Upvalue(Upvalue),
     Class(Class),
+    Instance(Instance),
 }
 
 impl Drop for Object {
@@ -45,6 +48,7 @@ impl fmt::Display for Object {
             }
             Object::Upvalue(_v) => write!(f, "upvalue"),
             Object::Class(v) => write!(f, "<class {}>", v.name.as_string()),
+            Object::Instance(v) => write!(f, "<instance of {}>", v.class.as_class().name.as_string()),
         }
     }
 }
@@ -103,6 +107,20 @@ impl Object {
         match self {
             Object::Class(class) => class,
             _ => panic!("Expected class"),
+        }
+    }
+
+    pub fn as_instance(&self) -> &Instance {
+        match self {
+            Object::Instance(instance) => instance,
+            _ => panic!("Expected instance"),
+        }
+    }
+
+    pub fn as_instance_mut(&mut self) -> &mut Instance {
+        match self {
+            Object::Instance(instance) => instance,
+            _ => panic!("Expected instance"),
         }
     }
 }

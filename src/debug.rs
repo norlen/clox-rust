@@ -94,6 +94,8 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
         OpCode::Class
         | OpCode::Constant
         | OpCode::DefineGlobal
+        | OpCode::SetProperty
+        | OpCode::GetProperty
         | OpCode::GetGlobal
         | OpCode::SetGlobal => (constant_instruction(), 2),
         OpCode::GetLocal

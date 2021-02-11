@@ -2,7 +2,7 @@ use colored::*;
 
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
-use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upvalue, GC, Class};
+use crate::memory::{Closure, Function, Gc, NativeFn, NativeFunction, Object, Upvalue, GC, Class, Instance};
 
 pub struct VM<'gc> {
     gc: &'gc mut GC,
@@ -310,6 +310,36 @@ impl<'gc> VM<'gc> {
                     let class = self.gc.track_class(Class::new(name));
                     self.gc.stack.push(class.into());
                 }
+                OpCode::GetProperty => {
+                    let value = {
+                        // Make sure we're actually accessing a class instance, and not something else.
+                        // And don't pop to make sure it is not garbage collected!
+                        let instance = match self.gc.stack.last().ok_or(VMError::RuntimeError2("Only instances have properties"))? {
+                            Value::Object(o) => match o.get() {
+                                Object::Instance(i) => i,
+                                _ => return Err(VMError::RuntimeError2("Only instances have properties")),
+                            }
+                            _ => return Err(VMError::RuntimeError2("Only instances have properties")),
+                        };
+                        let field = frame.next_instruction_as_constant()?.as_object();
+    
+                        instance.fields.get(field.as_string()).ok_or(VMError::RuntimeError2("Undefined property"))?.clone()
+                    };
+                    self.gc.stack.pop(); // Pop instance off the stack.
+                    self.gc.stack.push(value.clone());
+                }
+                OpCode::SetProperty => {
+                    let mut instance = self.gc.stack.get(self.gc.stack.len() - 2).ok_or(VMError::RuntimeError2("Only instances have properties"))?.as_object();
+                    let instance = instance.as_instance_mut();
+                    let field = frame.next_instruction_as_constant()?.as_object();
+
+                    let value = self.gc.stack.last().ok_or(VMError::RuntimeError2("No value on stack"))?;
+                    instance.fields.insert(field.as_string().clone(), value.clone());
+
+                    let value = self.gc.stack.pop().unwrap();
+                    self.gc.stack.pop(); // Pop instance.
+                    self.gc.stack.push(value); // Push back value.
+                }
             }
         }
         Ok(())
@@ -398,6 +428,12 @@ impl<'gc> VM<'gc> {
                     Ok(())
                 }
                 Object::Closure(_) => self.call(object.clone(), arg_count),
+                Object::Class(_) => {
+                    let instance = self.gc.track_instance(Instance::new(object.clone()));
+                    let instance_idx = self.gc.stack.len() - arg_count - 1;
+                    self.gc.stack[instance_idx] = Value::Object(instance);
+                    Ok(())
+                }
                 _ => panic!(),
             },
             _ => Err(VMError::RuntimeError),
@@ -816,6 +852,29 @@ mod tests {
             class Brioche {}
             print Brioche;
         "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_class_instance() {
+        let source = r#"
+            class Brioche {}
+            print Brioche();
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_class_properties() {
+        let source = r#"
+            class Pair {}
+
+            var pair = Pair();
+            pair.first = 1;
+            pair.second = 2;
+            print pair.first + pair.second; // 3.
+        "#;
+        run(source).unwrap();
         assert!(run(source).is_ok());
     }
 }

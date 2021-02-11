@@ -18,6 +18,9 @@ pub enum VMError {
     #[error("Runtime error")]
     RuntimeError,
 
+    #[error("Runtime error: {}", .0)]
+    RuntimeError2(&'static str),
+
     #[error("Type mismatch: {}", .0)]
     TypeError(String),
 
