@@ -35,6 +35,7 @@ pub enum OpCode {
     Class,
     SetProperty,
     GetProperty,
+    Method,
 }
 
 impl Into<u8> for OpCode {
@@ -90,6 +91,7 @@ impl OpCode {
             OpCode::Class => "Class",
             OpCode::SetProperty => "SetProperty",
             OpCode::GetProperty => "GetProperty",
+            OpCode::Method => "Method",
         }
     }
 }

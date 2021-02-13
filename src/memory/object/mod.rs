@@ -7,14 +7,12 @@ use crate::debug::LOG_OBJECT;
 mod class;
 mod closure;
 mod function;
-mod instance;
 mod native_fn;
 mod upvalue;
 
-pub use class::Class;
+pub use class::{BoundMethod, Class, Instance};
 pub use closure::Closure;
 pub use function::Function;
-pub use instance::Instance;
 pub use native_fn::{NativeFn, NativeFunction};
 pub use upvalue::Upvalue;
 
@@ -27,6 +25,7 @@ pub enum Object {
     Upvalue(Upvalue),
     Class(Class),
     Instance(Instance),
+    BoundMethod(BoundMethod),
 }
 
 impl Drop for Object {
@@ -50,6 +49,9 @@ impl fmt::Display for Object {
             Object::Class(v) => write!(f, "<class {}>", v.name.as_string()),
             Object::Instance(v) => {
                 write!(f, "<instance of {}>", v.class.as_class().name.as_string())
+            }
+            Object::BoundMethod(v) => {
+                write!(f, "<method {} of {}>", v.closure.get(), v.receiver.get())
             }
         }
     }
@@ -106,6 +108,13 @@ impl Object {
     }
 
     pub fn as_class(&self) -> &Class {
+        match self {
+            Object::Class(class) => class,
+            _ => panic!("Expected class"),
+        }
+    }
+
+    pub fn as_class_mut(&mut self) -> &mut Class {
         match self {
             Object::Class(class) => class,
             _ => panic!("Expected class"),

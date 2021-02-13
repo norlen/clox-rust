@@ -3,7 +3,8 @@ use colored::*;
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
 use crate::memory::{
-    Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Object, Upvalue, GC,
+    BoundMethod, Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Object, Upvalue,
+    GC,
 };
 
 pub struct VM<'gc> {
@@ -314,45 +315,41 @@ impl<'gc> VM<'gc> {
                     self.gc.stack.push(class.into());
                 }
                 OpCode::GetProperty => {
-                    let value =
-                        {
-                            // Make sure we're actually accessing a class instance, and not something else.
-                            // And don't pop to make sure it is not garbage collected!
-                            let instance =
-                                match self.gc.stack.last().ok_or(VMError::RuntimeError2(
-                                    "Only instances have properties",
-                                ))? {
-                                    Value::Object(o) => match o.get() {
-                                        Object::Instance(i) => i,
-                                        _ => {
-                                            return Err(VMError::RuntimeError2(
-                                                "Only instances have properties",
-                                            ))
-                                        }
-                                    },
-                                    _ => {
-                                        return Err(VMError::RuntimeError2(
-                                            "Only instances have properties",
-                                        ))
-                                    }
-                                };
-                            let field = frame.next_instruction_as_constant()?.as_object();
+                    let err = || VMError::RuntimeError2("Only instances have properties".into());
 
-                            instance
-                                .fields
-                                .get(field.as_string())
-                                .ok_or(VMError::RuntimeError2("Undefined property"))?
-                                .clone()
+                    // Make sure we're actually accessing a class instance, and not something else.
+                    // And don't pop to make sure it is not garbage collected!
+                    let instance = self.gc.stack.last().ok_or_else(err)?;
+                    let instance = match instance {
+                        Value::Object(o) => o,
+                        _ => return Err(err()),
+                    };
+                    let instance = match instance.get() {
+                        Object::Instance(inst) => inst,
+                        _ => return Err(err()),
+                    };
+                    let property = frame.next_instruction_as_constant()?.as_object();
+
+                    // The property can either be a field or a method.
+                    let value: Value =
+                        if let Some(value) = instance.fields.get(property.as_string()) {
+                            value.clone()
+                        } else {
+                            let class = instance.class.as_class();
+                            let bound_method = self.bind_method(class, property.as_string())?;
+                            self.gc.track_bound_method(bound_method).into()
                         };
                     self.gc.stack.pop(); // Pop instance off the stack.
-                    self.gc.stack.push(value.clone());
+                    self.gc.stack.push(value);
                 }
                 OpCode::SetProperty => {
                     let mut instance = self
                         .gc
                         .stack
                         .get(self.gc.stack.len() - 2)
-                        .ok_or(VMError::RuntimeError2("Only instances have properties"))?
+                        .ok_or(VMError::RuntimeError2(
+                            "Only instances have properties".into(),
+                        ))?
                         .as_object();
                     let instance = instance.as_instance_mut();
                     let field = frame.next_instruction_as_constant()?.as_object();
@@ -361,7 +358,7 @@ impl<'gc> VM<'gc> {
                         .gc
                         .stack
                         .last()
-                        .ok_or(VMError::RuntimeError2("No value on stack"))?;
+                        .ok_or(VMError::RuntimeError2("No value on stack".into()))?;
                     instance
                         .fields
                         .insert(field.as_string().clone(), value.clone());
@@ -369,6 +366,10 @@ impl<'gc> VM<'gc> {
                     let value = self.gc.stack.pop().unwrap();
                     self.gc.stack.pop(); // Pop instance.
                     self.gc.stack.push(value); // Push back value.
+                }
+                OpCode::Method => {
+                    let method_name = frame.next_instruction_as_constant()?.as_object();
+                    self.define_method(method_name.as_string())?;
                 }
             }
         }
@@ -403,6 +404,31 @@ impl<'gc> VM<'gc> {
         let upvalue = self.gc.track_upvalue(upvalue);
         self.gc.open_upvalues.push(upvalue.clone());
         upvalue
+    }
+
+    /// Defines a new class method.
+    fn define_method(&mut self, name: &String) -> Result<()> {
+        let method = self.gc.stack.last().unwrap().as_object();
+        let mut class = self.gc.stack[self.gc.stack.len() - 2].as_object();
+        let class = class.as_class_mut();
+        class.methods.insert(name.clone(), method);
+
+        // Pop method off the stack, now that we have it in the class.
+        self.gc.stack.pop();
+        Ok(())
+    }
+
+    /// Binds a method to an instance.
+    fn bind_method(&self, class: &Class, name: &String) -> Result<BoundMethod> {
+        let method = class.methods.get(name).ok_or(VMError::RuntimeError2(
+            format!("Undefined property '{}'", name).into(),
+        ))?;
+
+        let bound_method = BoundMethod::new(
+            self.gc.stack.last().unwrap().clone().as_object(),
+            method.clone(),
+        );
+        Ok(bound_method)
     }
 
     fn op_binary(&mut self, op: fn(f64, f64) -> f64) -> Result<()> {
@@ -458,7 +484,9 @@ impl<'gc> VM<'gc> {
                     Ok(())
                 }
                 Object::Closure(_) => self.call(object.clone(), arg_count),
+                Object::BoundMethod(method) => self.call(method.closure.clone(), arg_count),
                 Object::Class(_) => {
+                    // "Calling" a class means we want to instantiate one.
                     let instance = self.gc.track_instance(Instance::new(object.clone()));
                     let instance_idx = self.gc.stack.len() - arg_count - 1;
                     self.gc.stack[instance_idx] = Value::Object(instance);
@@ -904,7 +932,34 @@ mod tests {
             pair.second = 2;
             print pair.first + pair.second; // 3.
         "#;
-        run(source).unwrap();
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_class_methods() {
+        let source = r#"
+            class Brunch {
+                eggs() {}
+            }
+          
+            var brunch = Brunch();
+            var eggs = brunch.eggs;
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_class_methods_call() {
+        let source = r#"
+            class Scone {
+                topping(first, second) {
+                    print "scone with " + first + " and " + second;
+                }
+            }
+            
+            var scone = Scone();
+            scone.topping("berries", "cream");
+        "#;
         assert!(run(source).is_ok());
     }
 }

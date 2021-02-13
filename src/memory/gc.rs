@@ -1,7 +1,7 @@
 use colored::*;
 use std::collections::HashMap;
 
-use super::object::{Class, Closure, Function, Instance, NativeFn, Object, Upvalue};
+use super::object::{BoundMethod, Class, Closure, Function, Instance, NativeFn, Object, Upvalue};
 use super::{Gc, Traced};
 use crate::compiler::compiler::FunctionState;
 use crate::debug::{LOG_GC, STRESS_GC};
@@ -31,6 +31,7 @@ pub struct GC {
     /// Functions currently being compiled.
     pub functions: Vec<FunctionState>,
 
+    /// Functions that have been compiled.
     pub compiled_fns: Vec<Gc<Object>>,
 
     /// Open upvalues used by the VM.
@@ -89,6 +90,17 @@ impl GC {
         Gc::new(object)
     }
 
+    /// Helper to avoid lifetime issues, when in the compiler we want to
+    /// track a newly finished closure.
+    pub fn track_last_fn(&mut self) -> Gc<Object> {
+        self.on_track(std::mem::size_of::<Function>());
+        let fun = self.functions.last().unwrap().function.clone();
+        self.objects
+            .push(Box::new(Traced::new(Object::Function(fun))));
+        let object = self.objects.last_mut().unwrap();
+        Gc::new(object)
+    }
+
     /// Adds a native function to the garbage collector.
     pub fn track_native(&mut self, native_fn: NativeFn) -> Gc<Object> {
         self.on_track(std::mem::size_of::<NativeFn>());
@@ -130,6 +142,15 @@ impl GC {
         self.on_track(std::mem::size_of::<Instance>());
         self.objects
             .push(Box::new(Traced::new(Object::Instance(instance))));
+        let object = self.objects.last_mut().unwrap();
+        Gc::new(object)
+    }
+
+    /// Adds a bound method to the garbage collector.
+    pub fn track_bound_method(&mut self, bound_method: BoundMethod) -> Gc<Object> {
+        self.on_track(std::mem::size_of::<BoundMethod>());
+        self.objects
+            .push(Box::new(Traced::new(Object::BoundMethod(bound_method))));
         let object = self.objects.last_mut().unwrap();
         Gc::new(object)
     }
@@ -176,6 +197,8 @@ impl GC {
         }
     }
 
+    /// Goes through all the roots and marks those objects, as well as adding them to the gray list
+    /// whose elements are later traced through.
     fn mark_roots(&mut self) {
         // Helper to grab the object inside if it exists.
         let filter_objects = |v: &Value| match v {
@@ -304,6 +327,7 @@ impl GC {
                     Object::Upvalue(_) => std::mem::size_of::<Upvalue>(),
                     Object::Class(_) => std::mem::size_of::<Class>(),
                     Object::Instance(_) => std::mem::size_of::<Instance>(),
+                    Object::BoundMethod(_) => std::mem::size_of::<BoundMethod>(),
                     Object::String(_) => panic!("Should never encounter a string here"),
                 };
                 self.on_sweep(size);
@@ -376,6 +400,8 @@ impl GC {
             }
             Object::Class(ref class) => {
                 self.mark_object(class.name.clone());
+                let objects: Vec<_> = class.methods.iter().map(|(_, o)| o.clone()).collect();
+                self.mark_objects(objects.into_iter());
             }
             Object::Instance(ref instance) => {
                 self.mark_object(instance.class.clone());
@@ -388,6 +414,10 @@ impl GC {
                     })
                     .collect();
                 self.mark_objects(objects.into_iter());
+            }
+            Object::BoundMethod(ref method) => {
+                self.mark_object(method.receiver.clone());
+                self.mark_object(method.closure.clone());
             }
         }
     }

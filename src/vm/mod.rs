@@ -1,4 +1,5 @@
 use crate::compiler::compiler::CompileError;
+use std::borrow::Cow;
 use thiserror::Error;
 
 mod call_frame;
@@ -19,7 +20,7 @@ pub enum VMError {
     RuntimeError,
 
     #[error("Runtime error: {}", .0)]
-    RuntimeError2(&'static str),
+    RuntimeError2(Cow<'static, str>),
 
     #[error("Type mismatch: {}", .0)]
     TypeError(String),

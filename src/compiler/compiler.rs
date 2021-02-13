@@ -574,7 +574,7 @@ impl<'s, 'src: 's> Compiler<'src> {
 
     fn function(&mut self, kind: FunctionKind) -> Result<()> {
         // Set up and compile the a function.
-        let last_state = {
+        {
             // Create the new state.
             let state = {
                 let name = self.parser.previous().unwrap().data.clone();
@@ -613,7 +613,7 @@ impl<'s, 'src: 's> Compiler<'src> {
 
             // We skip leaving the scope, as those pops shouldn't be needed.
             // We can get and unwrap the last function state as we just created it above.
-            let mut state = self.gc.functions.pop().unwrap();
+            let state = self.gc.functions.last_mut().unwrap();
 
             // Add implicit return if there wasn't a return in the function body.
             if let Some(op) = state.function.chunk.code.last() {
@@ -625,21 +625,23 @@ impl<'s, 'src: 's> Compiler<'src> {
             if LOG_COMPILED_CODE {
                 debug::disassemble_chunk(&state.function.chunk, state.function.function_name());
             }
-
-            state
         };
 
         // Add this closure as a constant to the outer one.
-        let index = {
+        let (index, last_state) = {
             // We ask the GC to track this new function.
-            let new_function = self.gc.track_function(last_state.function.clone());
+            let new_function = self.gc.track_last_fn();
 
             // Not sure if it's because I structured it with an array, but we have to keep track of
             // the compiled functions. We arent't recursing into the constants when marking, so if we
             // have a function as a constant it wont mark all those roots. Temp fix.
             self.gc.compiled_fns.push(new_function.clone());
 
-            self.add_constant(new_function.into())
+            // With the function now tracked in GC, we can finally pop it off the stack.
+            let last_state = self.gc.functions.pop().unwrap();
+
+            let index = self.add_constant(new_function.into());
+            (index, last_state)
         };
 
         // Add upvalues we might have created.
@@ -670,22 +672,54 @@ impl<'s, 'src: 's> Compiler<'src> {
         Ok(())
     }
 
+    /// Handle a class declaration. Creates the class and all methods it contains.
     fn class_declaration(&mut self) -> Result<()> {
         self.consume(TokenKind::Identifier, "Expect class name")?;
+
+        // Classes are not required to be at the top-level. They can reside inside local blocks
+        // this requires some trickery so methods know which class they belong to.
+        let class_name = self.parser.previous()?.clone();
+
+        // Declare class name.
         let name_constant = self.identifier_constant(self.parser.previous()?.data.clone());
         self.declare_variable()?;
 
-        self.gc.functions.last_mut().unwrap().emit_bytes(
-            OpCode::Class,
-            name_constant,
-            self.parser.line(),
-        )?;
+        // Emit class instruction.
+        self.emit_bytes(OpCode::Class, name_constant)?;
         self.define_variable(name_constant)?;
 
+        // Load class on-top of the stack, so methods can use this.
+        self.named_variable(class_name, false)?;
+
+        // Handle class body.
         self.consume(TokenKind::BraceLeft, "Expect '{' before class body")?;
-        self.consume(TokenKind::BraceRight, "Expect '}' after class body")
+        while !self.parser.check_current(TokenKind::BraceRight)?
+            && !self.parser.check_current(TokenKind::EOF)?
+        {
+            self.method()?;
+        }
+        self.consume(TokenKind::BraceRight, "Expect '}' after class body")?;
+
+        // Methods are done now, we don't need the class on the stack any more.
+        self.emit_byte(OpCode::Pop)
     }
 
+    /// Creates and emits a class method.
+    fn method(&mut self) -> Result<()> {
+        // Consume the identifier of the method.
+        self.consume(TokenKind::Identifier, "Expect method name.")?;
+        let constant = self.identifier_constant(self.parser.previous()?.data.clone());
+
+        // Create the function leaving the compiled function on the stack,
+        // ready the be handled by the VM.
+        self.function(FunctionKind::Function)?;
+
+        // Emit method instruction.
+        self.emit_bytes(OpCode::Method, constant)?;
+        Ok(())
+    }
+
+    /// Creates a global function.
     fn fun_declaration(&mut self) -> Result<()> {
         let global = self.parse_variable("Expect function name")?;
         self.mark_local_initialized()?;
@@ -693,6 +727,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.define_variable(global)
     }
 
+    /// Handles a variable declaration.
     fn var_declaration(&mut self) -> Result<()> {
         let global = self.parse_variable("Expect variable name")?;
 
@@ -1011,10 +1046,10 @@ impl<'s, 'src: 's> Compiler<'src> {
         let name = self.identifier_constant(self.parser.previous()?.data.clone());
 
         if can_assign && self.match_token(TokenKind::Equal)? {
-            self.expression();
-            self.emit_bytes(OpCode::SetProperty, name);
+            self.expression()?;
+            self.emit_bytes(OpCode::SetProperty, name)?;
         } else {
-            self.emit_bytes(OpCode::GetProperty, name);
+            self.emit_bytes(OpCode::GetProperty, name)?;
         }
         Ok(())
     }
@@ -1115,6 +1150,15 @@ impl<'s, 'src: 's> Compiler<'src> {
             .last_mut()
             .unwrap()
             .emit_bytes(op_code, index, self.parser.line())
+    }
+
+    // Helper to emit a single byte to the currently compiling function.
+    fn emit_byte(&mut self, op_code: OpCode) -> Result<()> {
+        self.gc
+            .functions
+            .last_mut()
+            .unwrap()
+            .emit_byte(op_code, self.parser.line())
     }
 
     fn argument_list(&mut self) -> Result<u8> {

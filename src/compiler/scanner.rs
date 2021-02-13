@@ -81,7 +81,6 @@ impl<'a> Scanner<'a> {
                 ch if ch.is_alphabetic() => self.create_identifier_token(),
                 _ => return Err(ScannerError::InvalidCharacter),
             };
-            // println!("SCANNER\t\t[NEW_TOKEN] {:?}", token);
             Ok(token)
         } else {
             Ok(self.create_token(TokenKind::EOF))
