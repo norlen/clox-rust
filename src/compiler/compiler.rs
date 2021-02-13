@@ -41,6 +41,9 @@ pub enum CompileError {
     #[error("Cannot read local variable in its own initializer.")]
     LocalInitializer,
 
+    #[error("Cannot use 'this' outside of a class.")]
+    InvalidThis,
+
     // Used internally in consume to provide error messages to the user.
     #[error("Internal error")]
     InternalError,
@@ -85,15 +88,36 @@ impl Upvalue {
 pub enum FunctionKind {
     Function,
     Script,
+    Method,
 }
 
 pub struct Compiler<'src> {
+    /// Source currently being compiled.
     source: &'src str,
+
     scanner: Scanner<'src>,
     parser: Parser,
 
+    /// The classes currently compiling.
+    classes: Vec<ClassState>,
+
+    /// Reference to the GC so we can keep track of the dynamic
+    /// values created here.
     gc: &'src mut GC,
+
+    /// Errors encountered in the source code.
     errors: Vec<CompileError>,
+}
+
+#[derive(Debug)]
+struct ClassState {
+    name: Token,
+}
+
+impl ClassState {
+    fn new(name: Token) -> Self {
+        Self { name }
+    }
 }
 
 #[derive(Debug)]
@@ -118,11 +142,17 @@ impl FunctionState {
     }
 
     fn new(name: Gc<Object>, function_kind: FunctionKind) -> Self {
+        let local = if function_kind != FunctionKind::Function {
+            Local::new(Token::new(TokenKind::This, "this".to_owned(), 0), 0)
+        } else {
+            Local::new(Token::new_empty(), -1)
+        };
+
         Self {
             function: Function::new(name),
             function_kind,
             // The current function is always the first local, so we need to add one value here.
-            locals: vec![Local::new(Token::new_empty(), -1)],
+            locals: vec![local],
             scope_depth: 0,
             upvalues: Vec::new(),
         }
@@ -251,6 +281,7 @@ impl<'s, 'src: 's> Compiler<'src> {
             gc,
             parser: Parser::new(),
             source,
+            classes: Vec::new(),
             scanner: Scanner::new(source),
             errors: Vec::new(),
         }
@@ -572,6 +603,14 @@ impl<'s, 'src: 's> Compiler<'src> {
         Ok(())
     }
 
+    /// Handle `this` keyword.
+    fn this(&mut self, _can_assign: bool) -> Result<()> {
+        if self.classes.is_empty() {
+            return Err(CompileError::InvalidThis);
+        }
+        self.variable(false)
+    }
+
     fn function(&mut self, kind: FunctionKind) -> Result<()> {
         // Set up and compile the a function.
         {
@@ -688,6 +727,10 @@ impl<'s, 'src: 's> Compiler<'src> {
         self.emit_bytes(OpCode::Class, name_constant)?;
         self.define_variable(name_constant)?;
 
+        // Helps keeping track of when `this` is allowed.
+        self.classes
+            .push(ClassState::new(self.parser.previous()?.clone()));
+
         // Load class on-top of the stack, so methods can use this.
         self.named_variable(class_name, false)?;
 
@@ -699,6 +742,8 @@ impl<'s, 'src: 's> Compiler<'src> {
             self.method()?;
         }
         self.consume(TokenKind::BraceRight, "Expect '}' after class body")?;
+
+        self.classes.pop();
 
         // Methods are done now, we don't need the class on the stack any more.
         self.emit_byte(OpCode::Pop)
@@ -712,7 +757,7 @@ impl<'s, 'src: 's> Compiler<'src> {
 
         // Create the function leaving the compiled function on the stack,
         // ready the be handled by the VM.
-        self.function(FunctionKind::Function)?;
+        self.function(FunctionKind::Method)?;
 
         // Emit method instruction.
         self.emit_bytes(OpCode::Method, constant)?;
@@ -1380,7 +1425,7 @@ impl<'s, 'src: 's> Compiler<'src> {
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Print
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Return
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Super
-        ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // This
+        ParseRule { prefix: Some(Compiler::this)    , infix: None                   , precedence: Precedence::None        }, // This
         ParseRule { prefix: Some(Compiler::literal) , infix: None                   , precedence: Precedence::None        }, // True
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // Var
         ParseRule { prefix: None                    , infix: None                   , precedence: Precedence::None        }, // While

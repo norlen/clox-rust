@@ -121,13 +121,6 @@ impl Object {
         }
     }
 
-    pub fn as_instance(&self) -> &Instance {
-        match self {
-            Object::Instance(instance) => instance,
-            _ => panic!("Expected instance"),
-        }
-    }
-
     pub fn as_instance_mut(&mut self) -> &mut Instance {
         match self {
             Object::Instance(instance) => instance,

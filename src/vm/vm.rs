@@ -484,7 +484,11 @@ impl<'gc> VM<'gc> {
                     Ok(())
                 }
                 Object::Closure(_) => self.call(object.clone(), arg_count),
-                Object::BoundMethod(method) => self.call(method.closure.clone(), arg_count),
+                Object::BoundMethod(method) => {
+                    let ss = self.gc.stack.len();
+                    self.gc.stack[ss - arg_count - 1] = method.receiver.clone().into();
+                    self.call(method.closure.clone(), arg_count)
+                }
                 Object::Class(_) => {
                     // "Calling" a class means we want to instantiate one.
                     let instance = self.gc.track_instance(Instance::new(object.clone()));
@@ -959,6 +963,22 @@ mod tests {
             
             var scone = Scone();
             scone.topping("berries", "cream");
+        "#;
+        assert!(run(source).is_ok());
+    }
+
+    #[test]
+    fn vm_class_methods_handle_this() {
+        let source = r#"
+            class Nested {
+                method() {
+                    fun function() {
+                        print this;
+                    }
+                    function();
+                }
+            }
+            Nested().method(); // Should print that it's an instance of Nested.
         "#;
         assert!(run(source).is_ok());
     }
