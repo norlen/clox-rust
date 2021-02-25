@@ -34,9 +34,17 @@ impl<T: Debug> Traced<T> {
 }
 
 // Holds a pointer to some Gc object. Used by the garbage collector.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct Gc<T: Debug> {
     pub ptr: NonNull<Traced<T>>,
+}
+
+impl<T: Debug> Copy for Gc<T> {}
+
+impl<T: Debug> Clone for Gc<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl<T: Debug> Gc<T> {
