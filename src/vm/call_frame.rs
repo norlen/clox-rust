@@ -19,7 +19,8 @@ impl CallFrame {
 
     pub(super) fn next_instruction(&mut self) -> Result<u8> {
         self.ip += 1;
-        self.closure.as_mut()
+        self.closure
+            .as_mut()
             .function
             .as_ref()
             .chunk
@@ -49,12 +50,6 @@ impl CallFrame {
     }
 
     pub(super) fn constants(&self) -> &Vec<Value> {
-        &self
-            .closure
-            .as_ref()
-            .function
-            .as_ref()
-            .chunk
-            .constants
+        &self.closure.as_ref().function.as_ref().chunk.constants
     }
 }

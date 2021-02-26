@@ -1,12 +1,11 @@
 use crate::memory::{BoundMethod, Class, Closure, Function, Gc, Instance, NativeFn, Upvalue};
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Value {
     Nil,
     Bool(bool),
     Number(f64),
-    // Object(Gc<Object>),
     String(Gc<String>),
     Native(Gc<NativeFn>),
     Class(Gc<Class>),
@@ -16,12 +15,6 @@ pub enum Value {
     Closure(Gc<Closure>),
     Upvalue(Gc<Upvalue>),
 }
-
-// impl From<Gc<Object>> for Value {
-//     fn from(object: Gc<Object>) -> Self {
-//         Value::Object(object)
-//     }
-// }
 
 impl From<Gc<String>> for Value {
     fn from(string: Gc<String>) -> Self {
@@ -77,7 +70,6 @@ impl fmt::Display for Value {
             Value::Bool(v) => write!(f, "{}", v),
             Value::Nil => write!(f, "nil"),
             Value::Number(v) => write!(f, "{}", v),
-            // Value::Object(v) => write!(f, "{}", v.get()),
             Value::String(v) => write!(f, "{}", v.as_ref()),
             Value::Native(v) => write!(f, "{:?}", v.as_ref()),
             Value::Class(v) => write!(f, "{}", v.as_ref()),
@@ -96,9 +88,6 @@ impl Value {
             (Value::Number(lhs), Value::Number(rhs)) => Some(lhs == rhs),
             (Value::Nil, Value::Nil) => Some(true),
             (Value::Bool(lhs), Value::Bool(rhs)) => Some(lhs == rhs),
-            // (Value::Object(lhs), Value::Object(rhs)) => {
-            //     Some(std::ptr::eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr()))
-            // }
             (Value::String(lhs), Value::String(rhs)) => {
                 Some(std::ptr::eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr()))
             }
@@ -151,14 +140,6 @@ impl Value {
         }
     }
 
-    /// Returns the value as a `Gc<BoundMethod>`, panics if the value contains any other variant.
-    pub fn as_bound_method(&self) -> Gc<BoundMethod> {
-        match self {
-            Value::BoundMethod(o) => *o,
-            _ => panic!("Expected bound method object"),
-        }
-    }
-
     /// Returns the value as a `Gc<Function>`, panics if the value contains any other variant.
     pub fn as_function(&self) -> Gc<Function> {
         match self {
@@ -174,33 +155,4 @@ impl Value {
             _ => panic!("Expected closure object"),
         }
     }
-
-    /// Returns the value as a `Gc<Upvalue>`, panics if the value contains any other variant.
-    pub fn as_upvalue(&self) -> Gc<Upvalue> {
-        match self {
-            Value::Upvalue(o) => *o,
-            _ => panic!("Expected upvalue object"),
-        }
-    }
-
-
-
-    // pub fn as_object(&self) -> Gc<Object> {
-    //     self.as_object_ref().clone()
-    // }
-
-    // pub fn as_object_ref(&self) -> &Gc<Object> {
-    //     match self {
-    //         Value::Object(object) => object,
-    //         _ => panic!("Expected object"),
-    //     }
-    // }
-
-    // pub fn as_string(&self) -> &String {
-    //     self.as_object_ref().get().as_string()
-    // }
-
-    // pub fn as_function(&self) -> &Function {
-    //     self.as_object_ref().get().as_function()
-    // }
 }

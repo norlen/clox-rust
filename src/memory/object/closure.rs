@@ -24,3 +24,9 @@ impl fmt::Display for Closure {
         write!(f, "<closure {}>", self.function.as_ref().function_name())
     }
 }
+
+impl Drop for Closure {
+    fn drop(&mut self) {
+        println!("Dropping closure: {:?}", self);
+    }
+}

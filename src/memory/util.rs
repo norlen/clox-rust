@@ -1,52 +1,185 @@
+use super::{BoundMethod, Class, Closure, Function, Instance, NativeFn, Upvalue, GC};
 use colored::*;
 use std::cell::Cell;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use super::{GC, Instance, NativeFn, Class, BoundMethod, Function, Closure, Upvalue};
 
 use crate::debug::LOG_OBJECT;
 
-pub trait TracedObject {}
+pub trait TracedObject {
+    fn marked(&self) -> bool;
+    fn set_marked(&mut self, val: bool);
+    fn size(&self) -> usize;
 
-impl TracedObject for Traced<NativeFn> {}
-impl TracedObject for Traced<Class> {}
-impl TracedObject for Traced<Instance> {}
-impl TracedObject for Traced<BoundMethod> {}
-impl TracedObject for Traced<Function> {}
-impl TracedObject for Traced<Closure> {}
-impl TracedObject for Traced<Upvalue> {}
-
-/// Returned by the GC when tracking to temporarily hold on to these
-/// values and not collect them until this object has gone out out
-/// scope.
-pub struct Root<'a, T: Object2> {
-    gc: &'a mut GC,
-    obj: T,
+    fn blacken(&mut self, _gc: &mut GC) {}
 }
 
-impl<'a, T: Object2> Root<'a, T> {
-    pub fn new(gc: &'a mut GC, obj: T) -> Self {
-        Self {
-            gc,
-            obj,
+impl TracedObject for Traced<NativeFn> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<NativeFn>()
+    }
+}
+
+impl TracedObject for Traced<Class> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Class>()
+    }
+
+    fn blacken(&mut self, gc: &mut GC) {
+        gc.mark(self.data.name);
+        self.data
+            .methods
+            .values()
+            .for_each(|method| gc.mark(*method));
+    }
+}
+impl TracedObject for Traced<Instance> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Instance>()
+    }
+
+    fn blacken(&mut self, gc: &mut GC) {
+        gc.mark(self.data.class);
+        self.data
+            .fields
+            .values()
+            .for_each(|value| gc.mark_value(*value));
+    }
+}
+impl TracedObject for Traced<BoundMethod> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<BoundMethod>()
+    }
+    fn blacken(&mut self, gc: &mut GC) {
+        gc.mark(self.data.receiver);
+        gc.mark(self.data.closure);
+    }
+}
+impl TracedObject for Traced<Function> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Function>()
+    }
+    fn blacken(&mut self, gc: &mut GC) {
+        // For referenced function we want to first mark the function name, and then
+        // everything in the constant list that's used by the code.
+        if let Some(name) = self.data.name {
+            gc.mark(name);
+        }
+
+        self.data.chunk.constants.iter().for_each(|constant| {
+            gc.mark_value(constant.clone());
+        });
+    }
+}
+
+impl TracedObject for Traced<Closure> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Closure>()
+    }
+    fn blacken(&mut self, gc: &mut GC) {
+        gc.mark(self.data.function);
+        self.data
+            .upvalues
+            .iter()
+            .for_each(|upvalue| gc.mark(*upvalue));
+    }
+}
+
+impl TracedObject for Traced<Upvalue> {
+    fn marked(&self) -> bool {
+        self.marked.get()
+    }
+
+    fn set_marked(&mut self, val: bool) {
+        self.marked.set(val);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Upvalue>()
+    }
+    fn blacken(&mut self, gc: &mut GC) {
+        match self.data {
+            Upvalue::Open(_) => {} // Do nothing.
+            Upvalue::Closed(closed) => gc.mark_value(closed),
         }
     }
 }
 
-impl<'a, T: Object2> Drop for Root<'a, T> {
-    fn drop(&mut self) {
-        self.gc.remove_root();
-    }
-}
+/// Returned by the GC when tracking to temporarily hold on to these
+/// values and not collect them until this object has gone out out
+/// scope.
+// pub struct Root<'a, T: Object2> {
+//     gc: &'a mut GC,
+//     obj: T,
+// }
 
-/// An object is a type that is tracked by the GC.
-pub trait Object2 {}
-impl Object2 for Gc<String> {}
+// impl<'a, T: Object2> Root<'a, T> {
+//     pub fn new(gc: &'a mut GC, obj: T) -> Self {
+//         Self {
+//             gc,
+//             obj,
+//         }
+//     }
+// }
+
+// impl<'a, T: Object2> Drop for Root<'a, T> {
+//     fn drop(&mut self) {
+//         self.gc.remove_root();
+//     }
+// }
 
 #[derive(Debug, Clone)]
 pub struct Traced<T: ?Sized> {
-    marked: Cell<bool>,
+    pub(super) marked: Cell<bool>,
     pub data: T,
 }
 
@@ -56,18 +189,6 @@ impl<T> Traced<T> {
             marked: Cell::new(false),
             data,
         }
-    }
-
-    pub(super) fn marked(&self) -> bool {
-        self.marked.get()
-    }
-
-    pub(super) fn mark(&self) {
-        self.marked.set(true);
-    }
-
-    pub(super) fn unmark(&self) {
-        self.marked.set(false);
     }
 }
 
@@ -87,12 +208,19 @@ impl<T: Debug> Clone for Gc<T> {
 
 impl<T: Debug> Gc<T> {
     pub(super) fn new(ptr: &mut Traced<T>) -> Self {
-        if LOG_OBJECT {
-            println!("{}\tGc::new() : {:?}", "[OBJECT]".purple(), ptr);
-        }
-        Self {
+        let s = Self {
             ptr: NonNull::new(ptr).unwrap(),
+        };
+        if LOG_OBJECT {
+            println!(
+                "{}\tGc::new() ({}) ({:?}) : {:?}",
+                "[OBJECT]".purple(),
+                std::any::type_name::<T>(),
+                s.ptr.as_ptr(),
+                ptr
+            );
         }
+        s
     }
 }
 
@@ -107,24 +235,18 @@ impl<T> Gc<T> {
         unsafe { &mut self.ptr.as_mut().data }
     }
 
-    pub fn get(&self) -> &T {
-        // Yep!
-        unsafe { &self.ptr.as_ref().data }
-    }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        // Yep again!
-        unsafe { &mut self.ptr.as_mut().data }
-    }
-
     pub(super) fn marked(&self) -> bool {
-        unsafe { self.ptr.as_ref().marked() }
+        unsafe { self.ptr.as_ref().marked.get() }
     }
 
-    pub(super) fn mark(&self) {
+    pub(super) fn set_marked(&self, val: bool) {
         unsafe {
-            self.ptr.as_ref().mark();
+            self.ptr.as_ref().marked.set(val);
         }
+    }
+
+    pub(super) fn traced(&mut self) -> &mut Traced<T> {
+        unsafe { self.ptr.as_mut() }
     }
 }
 

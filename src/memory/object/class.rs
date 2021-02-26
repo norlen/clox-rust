@@ -35,7 +35,7 @@ impl fmt::Display for Class {
 pub struct Instance {
     /// The class this instance is created from.
     pub class: Gc<Class>,
-    
+
     /// Values for all the fields set.
     pub fields: HashMap<String, Value>,
 }
@@ -75,6 +75,11 @@ impl BoundMethod {
 
 impl fmt::Display for BoundMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<method {} of {}>", self.closure.as_ref(), self.receiver.as_ref())
+        write!(
+            f,
+            "<method {} of {}>",
+            self.closure.as_ref(),
+            self.receiver.as_ref()
+        )
     }
 }

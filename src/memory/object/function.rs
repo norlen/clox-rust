@@ -1,5 +1,5 @@
 use super::Gc;
-use crate::compiler::{chunk::Chunk, compiler::FunctionKind};
+use crate::compiler::chunk::Chunk;
 use std::fmt;
 
 #[derive(Debug, Clone)]

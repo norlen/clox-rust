@@ -3,8 +3,7 @@ use colored::*;
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
 use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
 use crate::memory::{
-    BoundMethod, Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Upvalue,
-    GC,
+    BoundMethod, Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Upvalue, GC,
 };
 
 pub struct VM<'gc> {
@@ -86,7 +85,7 @@ impl<'gc> VM<'gc> {
                         let mut stack_str = Vec::new();
                         for val in self.gc.stack.iter() {
                             let ss = match val {
-                                Value::String(object) => format!(" [{}]", object.get()),
+                                Value::String(object) => format!(" [{}]", object.as_ref()),
                                 _ => format!(" [{}]", val),
                             };
                             stack_str.push(ss);
@@ -284,8 +283,7 @@ impl<'gc> VM<'gc> {
                             let upvalue = self.capture_upvalue(frame.stack_base + index);
                             closure.upvalues.push(upvalue);
                         } else {
-                            let upvalue =
-                                frame.closure.as_mut().upvalues.get(index).unwrap();
+                            let upvalue = frame.closure.as_mut().upvalues.get(index).unwrap();
                             closure.upvalues.push(upvalue.clone());
                         }
                     }
@@ -324,14 +322,13 @@ impl<'gc> VM<'gc> {
                     let property = frame.next_instruction_as_constant()?.as_string_object();
 
                     // The property can either be a field or a method.
-                    let value: Value =
-                        if let Some(value) = instance.fields.get(property.as_ref()) {
-                            value.clone()
-                        } else {
-                            let class = instance.class.as_ref();
-                            let bound_method = self.bind_method(class, property.as_ref())?;
-                            self.gc.track(bound_method).into()
-                        };
+                    let value: Value = if let Some(value) = instance.fields.get(property.as_ref()) {
+                        value.clone()
+                    } else {
+                        let class = instance.class.as_ref();
+                        let bound_method = self.bind_method(class, property.as_ref())?;
+                        self.gc.track(bound_method).into()
+                    };
                     self.gc.stack.pop(); // Pop instance off the stack.
                     self.gc.stack.push(value);
                 }
@@ -444,7 +441,9 @@ impl<'gc> VM<'gc> {
             .stack
             .get(self.gc.stack.len() - 1)
             .ok_or(VMError::RuntimeError)?;
-        self.gc.globals.insert(global.as_ref().clone(), value.clone());
+        self.gc
+            .globals
+            .insert(global.as_ref().clone(), value.clone());
         self.gc.stack.pop();
         Ok(())
     }
@@ -460,7 +459,9 @@ impl<'gc> VM<'gc> {
     fn op_set_global(&mut self, frame: &mut CallFrame) -> Result<()> {
         let global = frame.next_instruction_as_constant()?.as_string_object();
         let value = self.gc.stack.last().unwrap();
-        self.gc.globals.insert(global.as_ref().clone(), value.clone());
+        self.gc
+            .globals
+            .insert(global.as_ref().clone(), value.clone());
         Ok(())
     }
 

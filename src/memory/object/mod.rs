@@ -1,8 +1,4 @@
-use colored::*;
-use std::fmt::{self, Debug};
-
 use super::{Gc, GC};
-use crate::debug::LOG_OBJECT;
 
 mod class;
 mod closure;
@@ -15,6 +11,16 @@ pub use closure::Closure;
 pub use function::Function;
 pub use native_fn::{NativeFn, NativeFunction};
 pub use upvalue::Upvalue;
+
+pub trait Object {}
+
+impl Object for BoundMethod {}
+impl Object for Class {}
+impl Object for Instance {}
+impl Object for Closure {}
+impl Object for Function {}
+impl Object for NativeFn {}
+impl Object for Upvalue {}
 
 // #[derive(Debug, Clone)]
 // // pub enum Object {
