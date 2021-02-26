@@ -1,10 +1,10 @@
 use super::Gc;
-use super::Object;
-use crate::compiler::chunk::Chunk;
+use crate::compiler::{chunk::Chunk, compiler::FunctionKind};
+use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub name: Option<Gc<Object>>,
+    pub name: Option<Gc<String>>,
     pub arity: i64,
     pub chunk: Chunk,
     pub num_upvalues: usize,
@@ -20,7 +20,7 @@ impl Function {
         }
     }
 
-    pub fn new(name: Gc<Object>) -> Self {
+    pub fn new(name: Gc<String>) -> Self {
         Self {
             name: Some(name),
             arity: 0,
@@ -30,14 +30,16 @@ impl Function {
     }
 
     pub fn function_name(&self) -> &str {
-        let default = "<script>";
         if let Some(object) = &self.name {
-            match &object.get() {
-                Object::String(object) => object.as_str(),
-                _ => default,
-            }
+            object.as_ref()
         } else {
-            default
+            "<script"
         }
+    }
+}
+
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<fn {}>", self.function_name())
     }
 }

@@ -6,7 +6,7 @@ use super::{
     token::{Token, TokenKind},
 };
 use crate::debug::{self, LOG_COMPILED_CODE, LOG_COMPILER};
-use crate::memory::{Function, Gc, Object, GC};
+use crate::memory::{Function, Gc, GC};
 use crate::vm::{instruction::OpCode, value::Value};
 
 #[derive(Debug, Error)]
@@ -141,7 +141,7 @@ impl FunctionState {
         }
     }
 
-    fn new(name: Gc<Object>, function_kind: FunctionKind) -> Self {
+    fn new(name: Gc<String>, function_kind: FunctionKind) -> Self {
         let local = if function_kind != FunctionKind::Function {
             Local::new(Token::new(TokenKind::This, "this".to_owned(), 0), 0)
         } else {

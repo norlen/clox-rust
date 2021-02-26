@@ -8,7 +8,7 @@ pub const TRACE_EXECUTION_STACK: bool = true;
 pub const TRACE_EXECUTION_INSTR: bool = true;
 
 // Set to true to trigger the GC when adding any new object.
-pub const STRESS_GC: bool = true;
+pub const STRESS_GC: bool = false;
 
 // Set to true to log the allocations and sweeping in the GC.
 pub const LOG_GC: bool = true;
@@ -49,13 +49,23 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
 
     let constant_instruction = || {
         let idx = *chunk.code.get(index + 1).unwrap() as usize;
-        let constant = chunk.read_constant(index).unwrap();
-        match constant {
-            Value::Object(object) => {
-                format!("[const index] {}\t[variable] {:?}", idx, object.get())
+
+        if let Some(constant) = chunk.read_constant(index) {
+            match constant {
+                Value::Function(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::Closure(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::Upvalue(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::Native(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::String(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::Class(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::Instance(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                Value::BoundMethod(o) =>  format!("[const index] {}\t[variable] {:?}", idx, o.as_ref()),
+                _ => format!("[value] {}", constant),
             }
-            _ => format!("[value] {}", constant),
+        } else {
+            format!("Error: Wrong index for constant. Trying to read constant index {}", index)
         }
+        // let constant = chunk.read_constant(index).unwrap();
     };
 
     let byte_instruction = || {
@@ -113,9 +123,17 @@ pub fn disassemble_instruction(chunk: &Chunk, index: usize) -> (String, usize) {
             let function = constant.as_function();
 
             let mut text = match constant {
-                Value::Object(object) => {
-                    format!("[index] {}\t[variable] {}", offset - 1, object.get())
-                }
+                Value::Function(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::Closure(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::Upvalue(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::Native(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::String(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::Class(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::Instance(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                Value::BoundMethod(o) =>  format!("[index] {}\t[variable] {}", offset - 1, o.as_ref()),
+                // Value::Object(object) => {
+                //     format!("[index] {}\t[variable] {}", offset - 1, object.get())
+                // }
                 _ => format!("[value] {}", constant),
             };
 

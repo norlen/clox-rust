@@ -1,5 +1,6 @@
 use super::GC;
 use crate::vm::value::Value;
+use std::fmt;
 
 /// Upvalue holds references to a stack variable used in a closure. This allows closures
 /// to close over variables. When those variables are popped off the stack the upvalue
@@ -40,6 +41,19 @@ impl Upvalue {
         match self {
             Upvalue::Open(index) => gc.stack.get(*index).unwrap().clone(),
             Upvalue::Closed(value) => value.clone(),
+        }
+    }
+}
+
+impl fmt::Display for Upvalue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Upvalue::Open(index) => {
+                write!(f, "open upvalue: idx {}", index)
+            }
+            Upvalue::Closed(val) => {
+                write!(f, "closed upvalue: {}", val)
+            }
         }
     }
 }
