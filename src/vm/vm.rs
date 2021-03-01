@@ -41,7 +41,7 @@ impl VM {
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
         let closure = {
-            let tracked_func = self.gc.borrow_mut().track(func.clone());
+            let tracked_func = self.gc.borrow_mut().track(func);
             self.stack.push(tracked_func.clone().into());
 
             let closure = Closure::new(tracked_func);

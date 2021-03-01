@@ -1,5 +1,4 @@
 mod gc;
-mod mem;
 mod object;
 mod ptr;
 mod trace;
