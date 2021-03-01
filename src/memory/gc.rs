@@ -1,28 +1,19 @@
 use colored::*;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, ptr::NonNull};
 
 use super::{
-    object::{Function, Upvalue},
-    TracedObject,
+    object::{Function, Object, Upvalue},
+    trace::Traced,
+    Gc,
 };
-use super::{Gc, Traced};
-use crate::compiler::compiler::FunctionState;
-use crate::debug::{LOG_GC, STRESS_GC};
-use crate::vm::{value::Value, CallFrame};
+use crate::{
+    compiler::compiler::FunctionState,
+    debug::{LOG_GC, STRESS_GC},
+    vm::{value::Value, CallFrame},
+};
 
 const DEFAULT_NEXT_GC: usize = 1024 * 1024;
 const HEAP_GROW_FACTOR: usize = 2;
-
-// enum GCObject {
-//     String(Box<Traced<String>>),
-//     NativeFn(Box<Traced<NativeFn>>),
-//     Function(Box<Traced<Function>>),
-//     Closure(Box<Traced<Closure>>),
-//     Upvalue(Box<Traced<Upvalue>>),
-//     Class(Box<Traced<Class>>),
-//     Instance(Box<Traced<Instance>>),
-//     BoundMethod(Box<Traced<BoundMethod>>),
-// }
 
 /// Mark and sweep garbage collector.
 ///
@@ -52,14 +43,14 @@ pub struct GC {
     pub open_upvalues: Vec<Gc<Upvalue>>,
 
     /// All objects tracked by the GC, excluding strings.
-    objects: Vec<Box<dyn TracedObject>>,
+    objects: Vec<Box<Traced<dyn Object>>>,
 
     /// All strings are interned, the GC also keep track of these.
     interned_strings: HashMap<String, Box<Traced<String>>>,
 
     /// The list of all objects that have recently been reached, either by marking roots, or by tracking their references.
     /// The items in this list are then blackened and removed on each collection cycle.
-    gray_list: Vec<Value>,
+    gray_list: Vec<NonNull<Traced<dyn Object>>>,
 
     /// The total amount of bytes Gc so far.
     bytes_allocated: usize,
@@ -94,15 +85,6 @@ impl GC {
         Gc::new(string)
     }
 
-    // pub fn track_string_root(&mut self, object: String) -> Root<'_, Gc<String>> {
-    //     let obj = self.track_string(object);
-    //     Root::new(self, obj)
-    // }
-
-    // pub fn remove_root(&mut self) {
-    //     todo!()
-    // }
-
     /// Helper to avoid lifetime issues, when in the compiler we want to
     /// track a newly finished closure.
     pub fn track_last_fn(&mut self) -> Gc<Function> {
@@ -114,9 +96,7 @@ impl GC {
     /// is tracked by the garbage collector, and freed when all references to it are gone.
     pub fn track<T>(&mut self, object: T) -> Gc<T>
     where
-        Traced<T>: TracedObject + 'static,
-        Box<Traced<T>>: Clone,
-        T: std::fmt::Debug,
+        T: Object + 'static,
     {
         self.on_track(std::mem::size_of::<T>());
         let mut object = Box::new(Traced::new(object));
@@ -224,8 +204,20 @@ impl GC {
     /// every gray object and marks them as black, while marking the objects they
     /// can reach.
     fn trace_references(&mut self) {
-        while let Some(value) = self.gray_list.pop() {
-            self.blacken_value(value);
+        while let Some(object) = self.gray_list.pop() {
+            // Finishes the processing of a gray object, will mark other objects that are reachable
+            // by the object.
+            unsafe {
+                if LOG_GC {
+                    println!(
+                        "{}\t\tBlacken: {:?} [{:?}]",
+                        "[GC]".cyan(),
+                        object.as_ref(),
+                        object.as_ptr()
+                    );
+                }
+                object.as_ref().data.trace_references(self);
+            }
         }
     }
 
@@ -245,10 +237,9 @@ impl GC {
     }
 
     /// Marks objects as reachable, and adds them once to the gray list for further processing.
-    pub(super) fn mark<T>(&mut self, object: Gc<T>)
+    pub(super) fn mark<T>(&mut self, mut object: Gc<T>)
     where
-        T: std::fmt::Display + std::fmt::Debug,
-        Gc<T>: Into<Value>,
+        T: Object + fmt::Display + fmt::Debug + 'static,
     {
         // Using the tri-color abstraction with white, gray and black nodes.
         // If the node is set to gray, we have that as marked being true. If
@@ -261,8 +252,8 @@ impl GC {
                 object.as_ref(),
                 object
             );
-            object.set_marked(true);
-            self.gray_list.push(object.into());
+            object.set_mark(true);
+            self.gray_list.push(object.ptr);
         }
     }
 
@@ -273,7 +264,7 @@ impl GC {
             .interned_strings
             .iter()
             .filter_map(|(key, value)| {
-                if !value.marked.get() {
+                if !value.marked() {
                     Some(key.clone())
                 } else {
                     None
@@ -299,70 +290,28 @@ impl GC {
             self.interned_strings.remove(&unmarked_key);
         }
 
-        // Sweep regular objects.
+        // Sweep regular objects, don't use iterators as we will modify the vec.
         let mut i = 0;
         while i < self.objects.len() {
-            if !self.objects.get(i).unwrap().marked() {
-                if LOG_GC {
-                    // println!(
-                    //     "{}\t\t[Sweep object] {} [{:?}]",
-                    //     "[GC]".cyan(),
-                    //     self.objects,
-                    //     self.objects
-                    // );
+            if let Some(object) = self.objects.get(i) {
+                let object = object.as_ref();
+                if !object.marked() {
+                    // if LOG_GC {
+                    //     println!(
+                    //         "{}\t\t[Sweep object] {} [{:?}]",
+                    //         "[GC]".cyan(),
+                    //         self.objects,
+                    //         self.objects
+                    //     );
+                    // }
+                    let removed = self.objects.swap_remove(i);
+                    self.on_sweep(removed.as_ref().data.size());
+                    // Don't increment i as we swap the last element to this location.
+                } else {
+                    self.objects[i].set_mark(false);
+                    i += 1;
                 }
-                let removed = self.objects.swap_remove(i);
-                let size = removed.size();
-                // let size = match removed.data {
-                //     Object::Function(_) => std::mem::size_of::<Function>(),
-                //     // Object::Native(_) => std::mem::size_of::<NativeFn>(),
-                //     Object::Closure(_) => std::mem::size_of::<Closure>(),
-                //     Object::Upvalue(_) => std::mem::size_of::<Upvalue>(),
-                //     // Object::Class(_) => std::mem::size_of::<Class>(),
-                //     // Object::Instance(_) => std::mem::size_of::<Instance>(),
-                //     // Object::BoundMethod(_) => std::mem::size_of::<BoundMethod>(),
-                //     // Object::String(_) => panic!("Should never encounter a string here"),
-                // };
-                self.on_sweep(size);
-            // Don't increment i as we swap the last element to this location.
-            } else {
-                self.objects[i].set_marked(false);
-                i += 1;
             }
         }
-    }
-
-    /// Finishes processing of a gray value, these should all be objects by now. So it gets
-    /// the enclosed types and calls blacken on it.
-    fn blacken_value(&mut self, value: Value) {
-        match value {
-            Value::String(_) => {}
-            Value::Native(o) => self.blacken(o),
-            Value::Function(o) => self.blacken(o),
-            Value::Closure(o) => self.blacken(o),
-            Value::Upvalue(o) => self.blacken(o),
-            Value::Class(o) => self.blacken(o),
-            Value::Instance(o) => self.blacken(o),
-            Value::BoundMethod(o) => self.blacken(o),
-            _ => panic!("Unexpected variant in blacken"),
-        }
-    }
-
-    /// Finishes the processing of a gray object, will mark other objects that are reachable
-    /// by the object.
-    fn blacken<T>(&mut self, mut object: Gc<T>)
-    where
-        T: std::fmt::Display + std::fmt::Debug,
-        Traced<T>: TracedObject,
-    {
-        if LOG_GC {
-            println!(
-                "{}\t\tBlacken: {} [{:?}]",
-                "[GC]".cyan(),
-                object.as_ref(),
-                object
-            );
-        }
-        object.traced().blacken(self);
     }
 }

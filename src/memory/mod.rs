@@ -1,9 +1,9 @@
 mod gc;
-mod object;
-mod util;
 mod mem;
+mod object;
+mod ptr;
+mod trace;
 
 pub use gc::GC;
 pub use object::*;
-pub use util::Gc;
-pub use util::*;
+pub use ptr::Gc;

@@ -1,7 +1,11 @@
-use super::{Closure, Gc};
-use crate::vm::value::Value;
 use std::collections::HashMap;
 use std::fmt;
+
+use super::{Closure, Object};
+use crate::{
+    memory::{Gc, GC},
+    vm::value::Value,
+};
 
 /// A class declaration containg the name and all it's method.
 #[derive(Debug, Clone)]
@@ -21,6 +25,17 @@ impl Class {
             name,
             methods: HashMap::new(),
         }
+    }
+}
+
+impl Object for Class {
+    fn trace_references(&self, gc: &mut GC) {
+        gc.mark(self.name);
+        self.methods.values().for_each(|method| gc.mark(*method));
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Class>()
     }
 }
 
@@ -50,6 +65,17 @@ impl Instance {
     }
 }
 
+impl Object for Instance {
+    fn trace_references(&self, gc: &mut GC) {
+        gc.mark(self.class);
+        self.fields.values().for_each(|value| gc.mark_value(*value));
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Instance>()
+    }
+}
+
 impl fmt::Display for Instance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<instance of {}>", self.class.as_ref())
@@ -70,6 +96,17 @@ impl BoundMethod {
     /// Creates a new bound method running `closure` for the instance `receiver`.
     pub fn new(receiver: Gc<Instance>, closure: Gc<Closure>) -> Self {
         Self { receiver, closure }
+    }
+}
+
+impl Object for BoundMethod {
+    fn trace_references(&self, gc: &mut GC) {
+        gc.mark(self.receiver);
+        gc.mark(self.closure);
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<BoundMethod>()
     }
 }
 

@@ -1,10 +1,12 @@
-use super::{Gc, GC};
-
 mod class;
 mod closure;
 mod function;
 mod native_fn;
 mod upvalue;
+
+use std::fmt;
+
+use super::GC;
 
 pub use class::{BoundMethod, Class, Instance};
 pub use closure::Closure;
@@ -12,15 +14,24 @@ pub use function::Function;
 pub use native_fn::{NativeFn, NativeFunction};
 pub use upvalue::Upvalue;
 
-pub trait Object {}
+/// Object is a garbage collected object. When marking these objects as reachable, if these objects
+/// contains other garbage collected data, these objects must also be marked as reachable. Tracing
+/// the references for garbage colleced objects solves this.
+pub trait Object: fmt::Debug + fmt::Display {
+    fn trace_references(&self, gc: &mut GC);
 
-impl Object for BoundMethod {}
-impl Object for Class {}
-impl Object for Instance {}
-impl Object for Closure {}
-impl Object for Function {}
-impl Object for NativeFn {}
-impl Object for Upvalue {}
+    fn size(&self) -> usize;
+}
+
+impl Object for String {
+    fn trace_references(&self, _gc: &mut GC) {
+        // Nothing has to be done here.
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<String>()
+    }
+}
 
 // #[derive(Debug, Clone)]
 // // pub enum Object {

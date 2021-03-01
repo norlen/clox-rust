@@ -1,6 +1,7 @@
-use super::GC;
-use crate::vm::value::Value;
 use std::fmt;
+
+use super::Object;
+use crate::{memory::GC, vm::value::Value};
 
 /// Upvalue holds references to a stack variable used in a closure. This allows closures
 /// to close over variables. When those variables are popped off the stack the upvalue
@@ -15,14 +16,19 @@ pub enum Upvalue {
 }
 
 impl Upvalue {
+    /// Creates a new upvalue, these are by default `Open`.
     pub fn new(local_index: usize) -> Self {
         Self::Open(local_index)
     }
 
+    /// Close the upvalue, i.e. instead of having an index into the stack
+    /// the actual owned value must be supplied and is stored withing the
+    /// upvalue.
     pub fn close(&mut self, value: Value) {
         *self = Upvalue::Closed(value);
     }
 
+    /// Returns the index if this is an open upvalue, otherwise it will panic.
     pub fn as_open(&self) -> usize {
         match self {
             Upvalue::Open(index) => *index,
@@ -30,6 +36,7 @@ impl Upvalue {
         }
     }
 
+    /// Set the value for an open upvalue, will panic if the upvalue is closed.
     pub fn set(&mut self, local_index: usize) {
         match self {
             Upvalue::Open(index) => *index = local_index,
@@ -37,11 +44,26 @@ impl Upvalue {
         }
     }
 
+    /// Returns the `Value` this upvalue holds, if it is open it will grab it from the stack,
+    /// and if it is closed it will simply be returned.
     pub fn get(&self, gc: &GC) -> Value {
         match self {
             Upvalue::Open(index) => gc.stack.get(*index).unwrap().clone(),
             Upvalue::Closed(value) => value.clone(),
         }
+    }
+}
+
+impl Object for Upvalue {
+    fn trace_references(&self, gc: &mut GC) {
+        match self {
+            Upvalue::Open(_) => {} // Do nothing.
+            Upvalue::Closed(closed) => gc.mark_value(*closed),
+        }
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Upvalue>()
     }
 }
 

@@ -1,5 +1,7 @@
-use super::{Function, Gc, Upvalue};
 use std::fmt;
+
+use super::{Function, Object, Upvalue};
+use crate::memory::{Gc, GC};
 
 #[derive(Debug, Clone)]
 pub struct Closure {
@@ -19,14 +21,19 @@ impl Closure {
     }
 }
 
-impl fmt::Display for Closure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<closure {}>", self.function.as_ref().function_name())
+impl Object for Closure {
+    fn trace_references(&self, gc: &mut GC) {
+        gc.mark(self.function);
+        self.upvalues.iter().for_each(|upvalue| gc.mark(*upvalue));
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Closure>()
     }
 }
 
-impl Drop for Closure {
-    fn drop(&mut self) {
-        println!("Dropping closure: {:?}", self);
+impl fmt::Display for Closure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<closure {}>", self.function.as_ref().function_name())
     }
 }

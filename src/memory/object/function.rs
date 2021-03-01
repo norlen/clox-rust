@@ -1,6 +1,10 @@
-use super::Gc;
-use crate::compiler::chunk::Chunk;
 use std::fmt;
+
+use super::Object;
+use crate::{
+    compiler::chunk::Chunk,
+    memory::{Gc, GC},
+};
 
 #[derive(Debug, Clone)]
 pub struct Function {
@@ -35,6 +39,24 @@ impl Function {
         } else {
             "<script"
         }
+    }
+}
+
+impl Object for Function {
+    fn trace_references(&self, gc: &mut GC) {
+        // For referenced function we want to first mark the function name, and then
+        // everything in the constant list that's used by the code.
+        if let Some(name) = self.name {
+            gc.mark(name);
+        }
+
+        self.chunk.constants.iter().for_each(|constant| {
+            gc.mark_value(constant.clone());
+        });
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of::<Function>()
     }
 }
 
