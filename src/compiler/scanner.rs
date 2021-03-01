@@ -3,7 +3,7 @@ use super::util::StrCursor;
 use radix_trie::Trie;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum ScannerError {
     #[error("Unterminated String")]
     UnterminatedString,

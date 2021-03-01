@@ -1,15 +1,11 @@
 use colored::*;
-use std::{collections::HashMap, fmt, ptr::NonNull};
+use std::{cell::RefCell, collections::HashMap, fmt, ptr::NonNull, rc::Rc};
 
-use super::{
-    object::{Function, Object, Upvalue},
-    trace::Traced,
-    Gc,
-};
+use super::{object::Object, trace::Traced, Gc};
 use crate::{
-    compiler::compiler::FunctionState,
+    compiler::compiler::Compiler,
     debug::{LOG_GC, STRESS_GC},
-    vm::{value::Value, CallFrame},
+    vm::{value::Value, vm::VM},
 };
 
 const DEFAULT_NEXT_GC: usize = 1024 * 1024;
@@ -24,23 +20,11 @@ const HEAP_GROW_FACTOR: usize = 2;
 /// Currently it is a bit messy, as the GC "owns" all these arrays and maps used by the compiler and VM. This should be
 /// fixed later, but getting it to work first and foremost.
 pub struct GC {
-    /// All values on the stack, used by the VM.
-    pub stack: Vec<Value>,
+    /// Pointer to the compiler, so the compiler roots can be retrieved.
+    pub compiler: Option<Rc<RefCell<Compiler>>>,
 
-    /// All global values, used by the VM.
-    pub globals: HashMap<String, Value>,
-
-    /// CallFrames used by the VM.
-    pub call_frames: Vec<CallFrame>,
-
-    /// Functions currently being compiled.
-    pub functions: Vec<FunctionState>,
-
-    /// Functions that have been compiled.
-    pub compiled_fns: Vec<Gc<Function>>,
-
-    /// Open upvalues used by the VM.
-    pub open_upvalues: Vec<Gc<Upvalue>>,
+    /// Pointer to the VM, so the GC can grab the roots used inside the VM.
+    pub vm: Option<Rc<RefCell<VM>>>,
 
     /// All objects tracked by the GC, excluding strings.
     objects: Vec<Box<Traced<dyn Object>>>,
@@ -62,15 +46,11 @@ pub struct GC {
 impl GC {
     pub fn new() -> Self {
         Self {
+            compiler: None,
+            vm: None,
             objects: Vec::new(),
             interned_strings: HashMap::new(),
             gray_list: Vec::new(),
-            stack: Vec::new(),
-            globals: HashMap::new(),
-            call_frames: Vec::new(),
-            functions: Vec::new(),
-            compiled_fns: Vec::new(),
-            open_upvalues: Vec::new(),
             bytes_allocated: 0,
             next_gc: DEFAULT_NEXT_GC,
         }
@@ -83,13 +63,6 @@ impl GC {
             .entry(object.clone())
             .or_insert_with(|| Box::new(Traced::new(object)));
         Gc::new(string)
-    }
-
-    /// Helper to avoid lifetime issues, when in the compiler we want to
-    /// track a newly finished closure.
-    pub fn track_last_fn(&mut self) -> Gc<Function> {
-        let fun = self.functions.last().unwrap().function.clone();
-        self.track(fun)
     }
 
     /// Starts tracking the object `T`. Returning a pointer in the form of `Gc<T>` which
@@ -151,53 +124,61 @@ impl GC {
     /// whose elements are later traced through.
     fn mark_roots(&mut self) {
         // Temporary clones.
+        if let Some(vm) = self.vm.clone() {
+            let vm = vm.borrow();
 
-        // Mark stack.
-        self.stack.clone().iter().for_each(|v| self.mark_value(*v));
+            // Mark stack.
+            vm.stack.clone().iter().for_each(|v| self.mark_value(*v));
 
-        // Mark globals.
-        self.globals
-            .clone()
-            .values()
-            .for_each(|global| self.mark_value(*global));
+            // Mark globals.
+            vm.globals
+                .clone()
+                .values()
+                .for_each(|global| self.mark_value(*global));
 
-        // Mark compiler roots.
-        // Since the function being compiled isn't tracked yet by the GC
-        // we have to go inside and mark the constantly directly.
-        let names: Vec<_> = self
-            .functions
-            .iter()
-            .filter_map(|f| f.function.name)
-            .collect();
-        names.into_iter().for_each(|name| self.mark(name));
+            // Mark closures in the call frames.
+            vm.call_frames
+                .clone()
+                .iter()
+                .for_each(|frame| self.mark(frame.closure));
 
-        // Mark currently compiling functions in compiler.
-        let constants: Vec<Value> = self
-            .functions
-            .iter()
-            .flat_map(|fun| fun.function.chunk.constants.iter().map(|v| *v))
-            .collect();
-        constants
-            .into_iter()
-            .for_each(|value: Value| self.mark_value(value));
+            // Mark open upvalues.
+            vm.open_upvalues
+                .clone()
+                .iter()
+                .for_each(|upvalue| self.mark(*upvalue));
+        }
 
-        // Mark already compiled functions in compiler.
-        self.compiled_fns
-            .clone()
-            .iter()
-            .for_each(|fun| self.mark(*fun));
+        if let Some(compiler) = self.compiler.clone() {
+            let compiler = compiler.borrow();
 
-        // Mark closures in the call frames.
-        self.call_frames
-            .clone()
-            .iter()
-            .for_each(|frame| self.mark(frame.closure));
+            // Mark compiler roots.
+            // Since the function being compiled isn't tracked yet by the GC
+            // we have to go inside and mark the constantly directly.
+            let names: Vec<_> = compiler
+                .functions
+                .iter()
+                .filter_map(|f| f.function.name)
+                .collect();
+            names.into_iter().for_each(|name| self.mark(name));
 
-        // Mark open upvalues.
-        self.open_upvalues
-            .clone()
-            .iter()
-            .for_each(|upvalue| self.mark(*upvalue));
+            // Mark currently compiling functions in compiler.
+            let constants: Vec<Value> = compiler
+                .functions
+                .iter()
+                .flat_map(|fun| fun.function.chunk.constants.iter().map(|v| *v))
+                .collect();
+            constants
+                .into_iter()
+                .for_each(|value: Value| self.mark_value(value));
+
+            // Mark already compiled functions in compiler.
+            compiler
+                .compiled_fns
+                .clone()
+                .iter()
+                .for_each(|fun| self.mark(*fun));
+        }
     }
 
     /// Traces all references that the objects in the gray list has. Goes through
@@ -272,11 +253,15 @@ impl GC {
             })
             .collect();
 
-        // Since we're using regular strings in a regular hash table we have to remove possible global values that
-        // are being sweeped, as they won't get automatically removed.
-        unmarked_keys.iter().for_each(|s| {
-            self.globals.remove(s);
-        });
+        if let Some(vm) = self.vm.clone() {
+            let mut vm = vm.borrow_mut();
+
+            // Since we're using regular strings in a regular hash table we have to remove possible global values that
+            // are being sweeped, as they won't get automatically removed.
+            unmarked_keys.iter().for_each(|s| {
+                vm.globals.remove(s);
+            });
+        }
 
         for unmarked_key in unmarked_keys {
             if LOG_GC {

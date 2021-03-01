@@ -1,4 +1,4 @@
-use crate::compiler::compiler::CompileError;
+use crate::compiler::CompileError;
 use std::borrow::Cow;
 use thiserror::Error;
 

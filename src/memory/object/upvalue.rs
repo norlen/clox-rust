@@ -1,7 +1,7 @@
 use std::fmt;
 
 use super::Object;
-use crate::{memory::GC, vm::value::Value};
+use crate::{memory::GC, vm::value::Value, vm::vm::VM};
 
 /// Upvalue holds references to a stack variable used in a closure. This allows closures
 /// to close over variables. When those variables are popped off the stack the upvalue
@@ -46,9 +46,9 @@ impl Upvalue {
 
     /// Returns the `Value` this upvalue holds, if it is open it will grab it from the stack,
     /// and if it is closed it will simply be returned.
-    pub fn get(&self, gc: &GC) -> Value {
+    pub fn get(&self, vm: &VM) -> Value {
         match self {
-            Upvalue::Open(index) => gc.stack.get(*index).unwrap().clone(),
+            Upvalue::Open(index) => vm.stack.get(*index).unwrap().clone(),
             Upvalue::Closed(value) => value.clone(),
         }
     }
