@@ -8,7 +8,7 @@ pub const TRACE_EXECUTION_STACK: bool = true;
 pub const TRACE_EXECUTION_INSTR: bool = true;
 
 // Set to true to trigger the GC when adding any new object.
-pub const STRESS_GC: bool = false;
+pub const STRESS_GC: bool = true;
 
 // Set to true to log the allocations and sweeping in the GC.
 pub const LOG_GC: bool = true;

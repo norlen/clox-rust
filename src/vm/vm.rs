@@ -1,39 +1,18 @@
 use colored::*;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use super::{instruction::OpCode, value::Value, CallFrame, Result, VMError};
-use crate::{
-    debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK},
-    memory::{
-        BoundMethod, Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Upvalue, GC,
-    },
+use crate::debug::{self, TRACE_EXECUTION_INSTR, TRACE_EXECUTION_STACK};
+use crate::memory::{
+    BoundMethod, Class, Closure, Function, Gc, Instance, NativeFn, NativeFunction, Upvalue, GC,
 };
 
-pub struct VM {
-    gc: Rc<RefCell<GC>>,
-
-    /// All values on the stack.
-    pub(crate) stack: Vec<Value>,
-
-    /// All global values.
-    pub(crate) globals: HashMap<String, Value>,
-
-    /// CallFrames used by the VM.
-    pub(crate) call_frames: Vec<CallFrame>,
-
-    /// Open upvalues used by the VM.
-    pub(crate) open_upvalues: Vec<Gc<Upvalue>>,
+pub struct VM<'gc> {
+    gc: &'gc mut GC,
 }
 
-impl VM {
-    pub fn new(gc: Rc<RefCell<GC>>) -> Self {
-        let mut vm = Self {
-            gc,
-            stack: Vec::new(),
-            globals: HashMap::new(),
-            call_frames: Vec::new(),
-            open_upvalues: Vec::new(),
-        };
+impl<'gc> VM<'gc> {
+    pub fn new(gc: &'gc mut GC) -> Self {
+        let mut vm = Self { gc };
 
         vm.define_native("clock".to_owned(), native_clock);
         vm
@@ -41,17 +20,17 @@ impl VM {
 
     pub fn interpret_function(&mut self, func: Function) -> Result<()> {
         let closure = {
-            let tracked_func = self.gc.borrow_mut().track(func);
-            self.stack.push(tracked_func.clone().into());
+            let tracked_func = self.gc.track(func.clone());
+            self.gc.stack.push(tracked_func.clone().into());
 
             let closure = Closure::new(tracked_func);
-            let closure: Value = self.gc.borrow_mut().track(closure).into();
+            let closure: Value = self.gc.track(closure).into();
 
             // Now we can pop the function off the stack!
-            self.stack.pop();
+            self.gc.stack.pop();
 
             // And track the closure instead.
-            self.stack.push(closure.clone());
+            self.gc.stack.push(closure.clone());
 
             closure
         };
@@ -61,7 +40,7 @@ impl VM {
 
         if let Err(err) = self.run() {
             // Stack trace.
-            for frame in self.call_frames.iter().rev() {
+            for frame in self.gc.call_frames.iter().rev() {
                 let name = frame.function().function_name();
                 let instruction = frame.ip - 1;
                 let line = frame
@@ -79,24 +58,21 @@ impl VM {
     }
 
     fn define_native(&mut self, name: String, native_fun: NativeFunction) {
-        let name_obj = self.gc.borrow_mut().track_string(name.clone());
-        self.stack.push(Value::String(name_obj)); // Make it reachable.
+        let name_obj = self.gc.track_string(name.clone());
+        self.gc.stack.push(Value::String(name_obj)); // Make it reachable.
 
-        let native_fn = self
-            .gc
-            .borrow_mut()
-            .track(NativeFn::new(name_obj, native_fun));
-        self.stack.push(native_fn.clone().into()); // Make this reachable as well.
+        let native_fn = self.gc.track(NativeFn::new(name_obj, native_fun));
+        self.gc.stack.push(native_fn.clone().into()); // Make this reachable as well.
 
-        self.globals.insert(name, native_fn.into());
+        self.gc.globals.insert(name, native_fn.into());
 
         // They are in the globals table now and does not need to be reachable from the stack.
-        self.stack.pop();
-        self.stack.pop();
+        self.gc.stack.pop();
+        self.gc.stack.pop();
     }
 
     fn run(&mut self) -> Result<()> {
-        let mut frame = self.call_frames.pop().ok_or(VMError::NoCallFrame)?;
+        let mut frame = self.gc.call_frames.pop().ok_or(VMError::NoCallFrame)?;
 
         while frame.ip < frame.code().len() {
             let instruction = frame.next_instruction()?;
@@ -105,9 +81,9 @@ impl VM {
             if TRACE_EXECUTION_STACK || TRACE_EXECUTION_INSTR {
                 let r = debug::disassemble_instruction(&frame.function().chunk, frame.ip - 1);
                 if TRACE_EXECUTION_STACK {
-                    if self.stack.len() > 0 {
+                    if self.gc.stack.len() > 0 {
                         let mut stack_str = Vec::new();
-                        for val in self.stack.iter() {
+                        for val in self.gc.stack.iter() {
                             let ss = match val {
                                 Value::String(object) => format!(" [{}]", object.as_ref()),
                                 _ => format!(" [{}]", val),
@@ -127,47 +103,47 @@ impl VM {
 
             match instruction {
                 OpCode::Return => {
-                    let result = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let result = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     self.close_upvalues(frame.stack_base)?;
 
-                    if self.call_frames.len() == 0 {
-                        self.stack.pop();
+                    if self.gc.call_frames.len() == 0 {
+                        self.gc.stack.pop();
                         return Ok(());
                     }
 
-                    self.stack.truncate(frame.stack_base);
-                    frame = self.call_frames.pop().unwrap();
+                    self.gc.stack.truncate(frame.stack_base);
+                    frame = self.gc.call_frames.pop().unwrap();
 
-                    self.stack.push(result);
+                    self.gc.stack.push(result);
                 }
                 OpCode::Constant => {
                     let constant = frame.next_instruction_as_constant()?;
                     let constant = constant.clone();
-                    self.stack.push(constant);
+                    self.gc.stack.push(constant);
                 }
                 OpCode::Nil => {
-                    self.stack.push(Value::Nil);
+                    self.gc.stack.push(Value::Nil);
                 }
                 OpCode::True => {
-                    self.stack.push(Value::Bool(true));
+                    self.gc.stack.push(Value::Bool(true));
                 }
                 OpCode::False => {
-                    self.stack.push(Value::Bool(false));
+                    self.gc.stack.push(Value::Bool(false));
                 }
                 OpCode::Equal => {
-                    let rhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
-                    let lhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     let result = lhs.equals(&rhs).ok_or_else(|| {
                         VMError::TypeError("cannot compare these values".to_owned())
                     })?;
-                    self.stack.push(Value::Bool(result));
+                    self.gc.stack.push(Value::Bool(result));
                 }
                 OpCode::Greater => {
-                    let rhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
-                    let lhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Bool(lhs > rhs))
+                            self.gc.stack.push(Value::Bool(lhs > rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -175,11 +151,11 @@ impl VM {
                     }
                 }
                 OpCode::Less => {
-                    let rhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
-                    let lhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match (lhs, rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Bool(lhs < rhs))
+                            self.gc.stack.push(Value::Bool(lhs < rhs))
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -187,19 +163,19 @@ impl VM {
                     }
                 }
                 OpCode::Not => {
-                    let value = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     let value = match value {
                         Value::Bool(value) => Ok(!value),
                         Value::Nil => Ok(true),
                         _ => Err(VMError::TypeError("expected a nil or bool".to_owned())),
                     }?;
-                    self.stack.push(Value::Bool(value));
+                    self.gc.stack.push(Value::Bool(value));
                 }
                 OpCode::Negate => {
-                    let value = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match value {
                         Value::Number(v) => {
-                            self.stack.push(Value::Number(-v));
+                            self.gc.stack.push(Value::Number(-v));
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -207,16 +183,16 @@ impl VM {
                     }
                 }
                 OpCode::Add => {
-                    let rhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
-                    let lhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     match (&lhs, &rhs) {
                         (Value::Number(lhs), Value::Number(rhs)) => {
-                            self.stack.push(Value::Number(lhs + rhs))
+                            self.gc.stack.push(Value::Number(lhs + rhs))
                         }
                         (Value::String(lhs), Value::String(rhs)) => {
                             let new = lhs.as_ref().clone() + rhs.as_ref();
-                            let new = self.gc.borrow_mut().track_string(new);
-                            self.stack.push(new.into());
+                            let new = self.gc.track_string(new);
+                            self.gc.stack.push(new.into());
                         }
                         _ => {
                             return Err(VMError::TypeError("operand must be a number.".to_owned()))
@@ -233,12 +209,12 @@ impl VM {
                     self.op_binary(|lhs, rhs| lhs / rhs)?;
                 }
                 OpCode::Print => {
-                    let value = self.stack.pop().ok_or(VMError::EmptyStack)?;
+                    let value = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
                     println!("{}", value);
                 }
                 OpCode::Pop => {
                     // We don't care about the value here, used in expression statements.
-                    self.stack.pop();
+                    self.gc.stack.pop();
                 }
                 OpCode::DefineGlobal => {
                     self.op_define_global(&mut frame)?;
@@ -252,17 +228,22 @@ impl VM {
                 }
                 OpCode::GetLocal => {
                     let index = frame.next_instruction()? as usize + frame.stack_base;
-                    let value = self.stack.get(index).ok_or(VMError::RuntimeError)?.clone();
-                    self.stack.push(value);
+                    let value = self
+                        .gc
+                        .stack
+                        .get(index)
+                        .ok_or(VMError::RuntimeError)?
+                        .clone();
+                    self.gc.stack.push(value);
                 }
                 OpCode::SetLocal => {
                     let index = frame.next_instruction()?;
-                    let value = self.stack.last().ok_or(VMError::EmptyStack)?.clone();
-                    self.stack[index as usize + frame.stack_base] = value;
+                    let value = self.gc.stack.last().ok_or(VMError::EmptyStack)?.clone();
+                    self.gc.stack[index as usize + frame.stack_base] = value;
                 }
                 OpCode::JumpIfFalse => {
                     let offset = frame.next_instruction_as_jump()?;
-                    let condition_value = match self.stack.last().ok_or(VMError::EmptyStack)? {
+                    let condition_value = match self.gc.stack.last().ok_or(VMError::EmptyStack)? {
                         Value::Nil => false,
                         Value::Bool(val) => *val,
                         _ => panic!(),
@@ -281,19 +262,19 @@ impl VM {
                 }
                 OpCode::Call => {
                     let arg_count = frame.next_instruction()? as usize;
-                    let fun_index = self.stack.len() - arg_count - 1;
-                    self.call_frames.push(frame);
+                    let fun_index = self.gc.stack.len() - arg_count - 1;
+                    self.gc.call_frames.push(frame);
 
-                    let fun = self.stack.get(fun_index).ok_or(VMError::RuntimeError)?;
+                    let fun = self.gc.stack.get(fun_index).ok_or(VMError::RuntimeError)?;
                     let fun = fun.clone();
 
                     self.call_value(fun, arg_count)?;
-                    frame = self.call_frames.pop().unwrap();
+                    frame = self.gc.call_frames.pop().unwrap();
                 }
                 OpCode::Closure => {
                     let function = frame.next_instruction_as_constant()?.as_function();
-                    let mut closure = self.gc.borrow_mut().track(Closure::new(function));
-                    self.stack.push(closure.clone().into());
+                    let mut closure = self.gc.track(Closure::new(function));
+                    self.gc.stack.push(closure.clone().into());
                     let closure = closure.as_mut();
                     for _ in 0..closure.upvalue_count {
                         let is_local = frame.next_instruction()? == 1;
@@ -311,29 +292,29 @@ impl VM {
                     let slot = frame.next_instruction()? as usize;
                     frame.closure.as_mut().upvalues[slot]
                         .as_mut()
-                        .set(self.stack.len() - 1);
+                        .set(self.gc.stack.len() - 1);
                 }
                 OpCode::GetUpvalue => {
                     let slot = frame.next_instruction()? as usize;
                     let upvalue = &frame.closure.as_mut().upvalues[slot];
-                    let value = upvalue.as_ref().get(self);
-                    self.stack.push(value);
+                    let value = upvalue.as_ref().get(&self.gc);
+                    self.gc.stack.push(value);
                 }
                 OpCode::CloseUpvalue => {
-                    self.close_upvalues(self.stack.len() - 1)?;
-                    self.stack.pop();
+                    self.close_upvalues(self.gc.stack.len() - 1)?;
+                    self.gc.stack.pop();
                 }
                 OpCode::Class => {
                     let name = frame.next_instruction_as_constant()?.as_string_object();
-                    let class = self.gc.borrow_mut().track(Class::new(name));
-                    self.stack.push(class.into());
+                    let class = self.gc.track(Class::new(name));
+                    self.gc.stack.push(class.into());
                 }
                 OpCode::GetProperty => {
                     let err = || VMError::RuntimeError2("Only instances have properties".into());
 
                     // Make sure we're actually accessing a class instance, and not something else.
                     // And don't pop to make sure it is not garbage collected!
-                    let instance = self.stack.last().ok_or_else(err)?;
+                    let instance = self.gc.stack.last().ok_or_else(err)?;
                     let instance = match instance {
                         Value::Instance(o) => o,
                         _ => return Err(err()),
@@ -346,15 +327,16 @@ impl VM {
                     } else {
                         let class = instance.class.as_ref();
                         let bound_method = self.bind_method(class, property.as_ref())?;
-                        self.gc.borrow_mut().track(bound_method).into()
+                        self.gc.track(bound_method).into()
                     };
-                    self.stack.pop(); // Pop instance off the stack.
-                    self.stack.push(value);
+                    self.gc.stack.pop(); // Pop instance off the stack.
+                    self.gc.stack.push(value);
                 }
                 OpCode::SetProperty => {
                     let mut instance = self
+                        .gc
                         .stack
-                        .get(self.stack.len() - 2)
+                        .get(self.gc.stack.len() - 2)
                         .ok_or(VMError::RuntimeError2(
                             "Only instances have properties".into(),
                         ))?
@@ -363,6 +345,7 @@ impl VM {
                     let field = frame.next_instruction_as_constant()?.as_string_object();
 
                     let value = self
+                        .gc
                         .stack
                         .last()
                         .ok_or(VMError::RuntimeError2("No value on stack".into()))?;
@@ -370,9 +353,9 @@ impl VM {
                         .fields
                         .insert(field.as_ref().clone(), value.clone());
 
-                    let value = self.stack.pop().unwrap();
-                    self.stack.pop(); // Pop instance.
-                    self.stack.push(value); // Push back value.
+                    let value = self.gc.stack.pop().unwrap();
+                    self.gc.stack.pop(); // Pop instance.
+                    self.gc.stack.push(value); // Push back value.
                 }
                 OpCode::Method => {
                     let method_name = frame.next_instruction_as_constant()?.as_string_object();
@@ -384,22 +367,22 @@ impl VM {
     }
 
     fn close_upvalues(&mut self, last_index: usize) -> Result<()> {
-        while let Some(upvalue) = self.open_upvalues.last_mut() {
+        while let Some(upvalue) = self.gc.open_upvalues.last_mut() {
             if upvalue.as_ref().as_open() < last_index {
                 break;
             }
 
             let upvalue = upvalue.as_mut();
-            let value = self.stack[upvalue.as_open()].clone();
+            let value = self.gc.stack[upvalue.as_open()].clone();
             upvalue.close(value);
-            self.open_upvalues.pop();
+            self.gc.open_upvalues.pop();
         }
         Ok(())
     }
 
     fn capture_upvalue(&mut self, local_index: usize) -> Gc<Upvalue> {
         let upvalue = {
-            for upvalue in self.open_upvalues.iter().rev() {
+            for upvalue in self.gc.open_upvalues.iter().rev() {
                 if upvalue.as_ref().as_open() == local_index {
                     return upvalue.clone();
                 }
@@ -408,20 +391,20 @@ impl VM {
             let upvalue = Upvalue::new(local_index);
             upvalue
         };
-        let upvalue = self.gc.borrow_mut().track(upvalue);
-        self.open_upvalues.push(upvalue.clone());
+        let upvalue = self.gc.track(upvalue);
+        self.gc.open_upvalues.push(upvalue.clone());
         upvalue
     }
 
     /// Defines a new class method.
     fn define_method(&mut self, name: &String) -> Result<()> {
-        let method = self.stack.last().unwrap().as_closure();
-        let mut class = self.stack[self.stack.len() - 2].as_class();
+        let method = self.gc.stack.last().unwrap().as_closure();
+        let mut class = self.gc.stack[self.gc.stack.len() - 2].as_class();
         let class = class.as_mut();
         class.methods.insert(name.clone(), method);
 
         // Pop method off the stack, now that we have it in the class.
-        self.stack.pop();
+        self.gc.stack.pop();
         Ok(())
     }
 
@@ -432,18 +415,18 @@ impl VM {
         ))?;
 
         let bound_method = BoundMethod::new(
-            self.stack.last().unwrap().clone().as_instance(),
+            self.gc.stack.last().unwrap().clone().as_instance(),
             method.clone(),
         );
         Ok(bound_method)
     }
 
     fn op_binary(&mut self, op: fn(f64, f64) -> f64) -> Result<()> {
-        let rhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
-        let lhs = self.stack.pop().ok_or(VMError::EmptyStack)?;
+        let rhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
+        let lhs = self.gc.stack.pop().ok_or(VMError::EmptyStack)?;
         match (lhs, rhs) {
             (Value::Number(lhs), Value::Number(rhs)) => {
-                self.stack.push(Value::Number(op(lhs, rhs)))
+                self.gc.stack.push(Value::Number(op(lhs, rhs)))
             }
             _ => return Err(VMError::TypeError("operand must be a number.".to_owned())),
         }
@@ -454,50 +437,55 @@ impl VM {
         let global = frame.next_instruction_as_constant()?.as_string_object();
         // let string = self.get_string_object(next_instruction)?;
         let value = self
+            .gc
             .stack
-            .get(self.stack.len() - 1)
+            .get(self.gc.stack.len() - 1)
             .ok_or(VMError::RuntimeError)?;
-        self.globals.insert(global.as_ref().clone(), value.clone());
-        self.stack.pop();
+        self.gc
+            .globals
+            .insert(global.as_ref().clone(), value.clone());
+        self.gc.stack.pop();
         Ok(())
     }
 
     fn op_get_global(&mut self, frame: &mut CallFrame) -> Result<()> {
         let global = frame.next_instruction_as_constant()?.as_string_object();
         // let string = self.get_string_object(next_instruction)?;
-        let value = self.globals.get(global.as_ref()).unwrap();
-        self.stack.push(value.clone());
+        let value = self.gc.globals.get(global.as_ref()).unwrap();
+        self.gc.stack.push(value.clone());
         Ok(())
     }
 
     fn op_set_global(&mut self, frame: &mut CallFrame) -> Result<()> {
         let global = frame.next_instruction_as_constant()?.as_string_object();
-        let value = self.stack.last().unwrap();
-        self.globals.insert(global.as_ref().clone(), value.clone());
+        let value = self.gc.stack.last().unwrap();
+        self.gc
+            .globals
+            .insert(global.as_ref().clone(), value.clone());
         Ok(())
     }
 
     fn call_value(&mut self, fun: Value, arg_count: usize) -> Result<()> {
         match &fun {
             Value::Native(native_fn) => {
-                let s = self.stack.len() - arg_count - 1;
-                let e = self.stack.len();
+                let s = self.gc.stack.len() - arg_count - 1;
+                let e = self.gc.stack.len();
                 let native_fn = native_fn.fun;
-                let result = native_fn(arg_count, &self.stack[s..e]);
-                self.stack.truncate(s);
-                self.stack.push(result);
+                let result = native_fn(arg_count, &self.gc.stack[s..e]);
+                self.gc.stack.truncate(s);
+                self.gc.stack.push(result);
                 Ok(())
             }
             Value::BoundMethod(method) => {
-                let ss = self.stack.len();
-                self.stack[ss - arg_count - 1] = method.receiver.clone().into();
+                let ss = self.gc.stack.len();
+                self.gc.stack[ss - arg_count - 1] = method.receiver.clone().into();
                 self.call(method.closure.clone(), arg_count)
             }
             Value::Class(class) => {
                 // "Calling" a class means we want to instantiate one.
-                let instance = self.gc.borrow_mut().track(Instance::new(class.clone()));
-                let instance_idx = self.stack.len() - arg_count - 1;
-                self.stack[instance_idx] = Value::Instance(instance);
+                let instance = self.gc.track(Instance::new(class.clone()));
+                let instance_idx = self.gc.stack.len() - arg_count - 1;
+                self.gc.stack[instance_idx] = Value::Instance(instance);
                 Ok(())
             }
             Value::Closure(closure) => self.call(closure.clone(), arg_count),
@@ -514,10 +502,10 @@ impl VM {
             );
         }
 
-        let call_frame = CallFrame::new(closure, self.stack.len() - arg_count - 1);
-        self.call_frames.push(call_frame);
+        let call_frame = CallFrame::new(closure, self.gc.stack.len() - arg_count - 1);
+        self.gc.call_frames.push(call_frame);
 
-        if self.call_frames.len() > 255 {
+        if self.gc.call_frames.len() > 255 {
             // We should have some limit at least.
             panic!("Stack overflow");
         }
@@ -537,20 +525,18 @@ fn native_clock(_arg_count: usize, _args: &[Value]) -> Value {
 mod tests {
     use super::*;
 
-    fn run(source: &'static str) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn run(source: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
         use crate::compiler::compiler::Compiler;
 
-        let gc = Rc::new(RefCell::new(GC::new()));
-        let vm = Rc::new(RefCell::new(VM::new(gc.clone())));
-        let compiler = Rc::new(RefCell::new(Compiler::new(source, vm.clone(), gc.clone())));
-        gc.borrow_mut().compiler = Some(compiler.clone());
-        gc.borrow_mut().vm = Some(vm.clone());
+        let mut gc = GC::new();
 
         let function = {
-            let function = compiler.borrow_mut().compile()?;
-            function
+            let compiler = Compiler::new(source, &mut gc);
+            compiler.compile()?
         };
-        vm.borrow_mut().interpret_function(function)?;
+
+        let mut vm = VM::new(&mut gc);
+        vm.interpret_function(function)?;
         Ok(())
     }
 
@@ -578,8 +564,8 @@ mod tests {
         let mut fun = Function::blank();
         fun.chunk = chunk;
 
-        let gc = Rc::new(RefCell::new(GC::new()));
-        let mut vm = VM::new(gc);
+        let mut gc = GC::new();
+        let mut vm = VM::new(&mut gc);
         assert!(vm.interpret_function(fun).is_ok());
     }
 
